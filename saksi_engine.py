@@ -176,6 +176,28 @@ def acuan_bi(data: dict, valuta: str, tgl: pd.Timestamp, gran: str = "Harian") -
     return float(sub.iloc[-1]["Kurs Tengah"])
 
 
+def acuan_bi_avg(data: dict, valuta: str, tgl, gran: str = "Harian") -> Optional[float]:
+    """Acuan BI untuk VISUAL tren. Harian → nilai 1 hari (ffill, = acuan_bi).
+    Periode agregat (Mingguan/Bulanan/Tahunan) → RATA-RATA nilai acuan BI
+    (Jisdor untuk USD / Kurs Tengah untuk lainnya) yang jatuh dalam periode,
+    agar setara dengan kurs KUPVA yang juga dirata-rata. Bila tak ada nilai BI
+    dalam periode → fallback ke acuan_bi (ffill ujung periode)."""
+    if gran == "Harian":
+        return acuan_bi(data, valuta, tgl, "Harian")
+    lo, hi = periode_range(tgl, gran)
+    if valuta == "USD":
+        ref = data["jisdor"]
+        sub = ref[(ref["Tgl"] >= lo) & (ref["Tgl"] <= hi)]
+        if not sub.empty:
+            return float(sub["Kurs Jisdor USD"].mean())
+    else:
+        ref = data["tengah"]
+        sub = ref[(ref["Kode"] == valuta) & (ref["Tgl"] >= lo) & (ref["Tgl"] <= hi)]
+        if not sub.empty:
+            return float(sub["Kurs Tengah"].mean())
+    return acuan_bi(data, valuta, tgl, gran)
+
+
 def punya_acuan(data: dict, valuta: str) -> bool:
     if valuta == "USD":
         return not data["jisdor"].empty
@@ -356,7 +378,7 @@ def tren_kurs(data, valuta, tgl_h, pts, gran="Harian") -> pd.DataFrame:
         titik = [t for t in daftar_periode(cb, gran) if periode_akhir(t, gran) <= hi]
     rows = []
     for t in titik:
-        acu_t = acuan_bi(data, valuta, t, gran)
+        acu_t = acuan_bi_avg(data, valuta, t, gran)   # rata-rata per periode utk visual
         kr = kurs_rata2(cb, t, valuta, pts, gran, acuan=acu_t)
         rows.append({
             "Tanggal": pd.Timestamp(t), "Kurs Jual": kr["jual"],

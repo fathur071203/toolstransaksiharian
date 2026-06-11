@@ -62,7 +62,7 @@ def _set_cell_bg(cell, fill: str) -> None:
     _shade(cell._tc.get_or_add_tcPr(), fill)
 
 
-def _banner(doc) -> None:
+def _banner(doc, judul: str) -> None:
     t = doc.add_table(rows=1, cols=1)
     t.alignment = WD_TABLE_ALIGNMENT.CENTER
     _no_borders(t)
@@ -70,15 +70,10 @@ def _banner(doc) -> None:
     _set_cell_bg(cell, _BIRU_TUA)
     p1 = cell.paragraphs[0]
     p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r1 = p1.add_run("BANK INDONESIA")
+    r1 = p1.add_run(judul)
     r1.bold = True
-    r1.font.size = Pt(20)
+    r1.font.size = Pt(13)
     r1.font.color.rgb = _PUTIH
-    p2 = cell.add_paragraph()
-    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r2 = p2.add_run("BANK SENTRAL REPUBLIK INDONESIA")
-    r2.font.size = Pt(9)
-    r2.font.color.rgb = RGBColor(0xC8, 0xA9, 0x51)
 
 
 def _center(doc, text, *, bold=False, italic=False, size=10, color=None):
@@ -135,6 +130,75 @@ def _label_grafik(doc, text: str) -> None:
 def _add_pic(doc, buf: BytesIO) -> None:
     doc.add_picture(buf, width=Inches(6.4))
     doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _para(doc, *segments, indent: float = 0.25) -> None:
+    """Paragraf indent (bukan bullet) dengan run campuran bold/normal."""
+    p = doc.add_paragraph()
+    if indent:
+        p.paragraph_format.left_indent = Inches(indent)
+    for seg in segments:
+        teks, bold = (seg, False) if isinstance(seg, str) else (seg[0], seg[1])
+        r = p.add_run(teks)
+        r.bold = bold
+        r.font.size = Pt(10.5)
+
+
+# ---- format angka gaya laporan asesmen ----
+def _pct(x) -> str:
+    """Persen rasio (selalu positif), mis. '100.7%'."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return "-"
+    return f"{x * 100:.1f}%"
+
+
+def _perub(g) -> str:
+    """Arah perubahan tanpa tanda minus: 'naik 16,0%' / 'turun 84,8%' / 'tetap'."""
+    if g is None or (isinstance(g, float) and np.isnan(g)):
+        return "tidak terdefinisi"
+    a = f"{abs(g) * 100:.1f}".replace(".", ",")
+    if g > 0:
+        return f"naik {a}%"
+    if g < 0:
+        return f"turun {a}%"
+    return "tetap (0,0%)"
+
+
+def _rp_kata(x) -> str:
+    """Rupiah kata penuh, mis. 'Rp12,3 miliar', 'Rp450,0 juta'."""
+    x = float(x) if x is not None and x == x else 0.0
+    a = abs(x)
+    if a >= 1e12:
+        return f"Rp{x / 1e12:.1f} triliun".replace(".", ",")
+    if a >= 1e9:
+        return f"Rp{x / 1e9:.1f} miliar".replace(".", ",")
+    if a >= 1e6:
+        return f"Rp{x / 1e6:.1f} juta".replace(".", ",")
+    return ("Rp" + f"{x:,.0f}").replace(",", ".")
+
+
+def _stat_kurs(rasio, ambang) -> str:
+    """Status kurs 3-tingkat untuk laporan: Normal (≤100%) / Perhatian (>100%) /
+    Waspada (≥ ambang, default 105%)."""
+    if rasio is None or (isinstance(rasio, float) and np.isnan(rasio)) or rasio == 0:
+        return "Tanpa data"
+    if rasio >= ambang:
+        return "Waspada"
+    if rasio > 1.0:
+        return "Perhatian"
+    return "Normal"
+
+
+def _stat_vol(g, ambang) -> str:
+    """Status volume BERARAH (tidak dinormalkan): Waspada bila NAIK ≥ ambang;
+    Perhatian bila TURUN ≥ ambang; selain itu Normal."""
+    if g is None or (isinstance(g, float) and np.isnan(g)):
+        return "Tanpa data"
+    if g >= ambang:
+        return "Waspada"
+    if g <= -ambang:
+        return "Perhatian"
+    return "Normal"
 
 
 # ----------------------------------------------------------------------------
@@ -268,6 +332,22 @@ def build_report(ctx, provinsi: str = "DKI Jakarta", penyusun: str = "") -> byte
 
     akhir_pekan = g == "Harian" and E.is_weekend(ctx.tgl_p)
     pt_lbl = f"Seluruh {total} KUPVA BB" if semua_pt else f"{total} KUPVA BB terpilih"
+    n_tanggal = sum(1 for t in E.daftar_tanggal(cb)
+                    if pd.Timestamp(ctx.tgl_awal) <= pd.Timestamp(t) <= pd.Timestamp(ctx.tgl_h))
+    tgl_cek_en = pd.Timestamp(ctx.tgl_h).strftime("%d %B %Y")
+
+    # rincian KUPVA BB perhatian (perubahan volume dtd >= ambang)
+    # Waspada volume = KENAIKAN dtd >= ambang (tidak dinormalkan / abs).
+    ambv = ctx.ambang_dtd
+    naik_mask = (mtx["Growth Jual"] >= ambv) | (mtx["Growth Beli"] >= ambv)
+    wasp_vol_naik = mtx[naik_mask]["KUPVA BB"].tolist()
+
+    rinci = mtx[mtx["Status Volume"] == "Waspada"]   # perubahan besar (naik/turun) → "perhatian"
+    rincian_txt = "; ".join(
+        f"{r['KUPVA BB']} (vol jual {_perub(r['Growth Jual'])} setara {_rp_kata(r['Vol Jual (H)'])}; "
+        f"vol beli {_perub(r['Growth Beli'])} setara {_rp_kata(r['Vol Beli (H)'])})"
+        for _, r in rinci.iterrows()
+    )
 
     # ---- dokumen ----
     doc = Document()
@@ -277,13 +357,13 @@ def build_report(ctx, provinsi: str = "DKI Jakarta", penyusun: str = "") -> byte
         s.left_margin = Inches(0.7)
         s.right_margin = Inches(0.7)
 
-    _banner(doc)
-    _center(doc, f"KPwDN Provinsi {provinsi}", bold=True, size=12, color=RGBColor(0, 0x28, 0x55))
-    _center(doc, f"Tanggal cek : {E.fmt_tgl(ctx.tgl_h)}   |   "
-                 f"Rentang tren: {E.fmt_tgl(ctx.tgl_awal)} – {E.fmt_tgl(ctx.tgl_h)}", size=10)
+    _banner(doc, "OBJEK MONITORING DAN ABSENSI LAPORAN")
+    _center(doc, f"KPwBI Provinsi {provinsi}", bold=True, size=12, color=RGBColor(0, 0x28, 0x55))
+    _center(doc, f"Tanggal cek : {tgl_cek_en}   |   "
+                 f"Rentang tren: {E.fmt_tgl(ctx.tgl_awal)} - {E.fmt_tgl(ctx.tgl_h)}   |   "
+                 f"{n_tanggal} tanggal dipilih", size=10)
     _center(doc, f"Laporan Monitoring {g} Transaksi KUPVA BB", bold=True, italic=True, size=11)
-    _note(doc, f"Valuta dianalisis: {val}   |   PT/KUPVA BB: {pt_lbl}   |   "
-               f"Valuta dipantau: {', '.join(ctx.valutas)}")
+    _note(doc, f"Valuta dianalisis: {val}   |   PT/KUPVA BB: {pt_lbl}")
 
     # ====================================================================
     # 1. ANALISIS MONITORING TRANSAKSI – KURS
@@ -294,13 +374,16 @@ def build_report(ctx, provinsi: str = "DKI Jakarta", penyusun: str = "") -> byte
                  "(lihat grafik §1 di bawah).")
     _bullet(doc, "Grafik tren rasio perbandingan kurs KUPVA BB terhadap kurs Bank Indonesia per "
                  "jenis valuta menggunakan seluruh tanggal data yang tersedia sampai dengan tanggal cek.")
-    _bullet(doc, f"Analisis rasio kurs ditinjau per jenis valuta untuk {val}. Sebagai contoh pada "
-                 f"valuta {val}: ",
-            (f"rasio kurs jual {E.persen(rj['Rasio vs BI'])} ({rj['Status']}), "
-             f"kurs tengah {E.persen(rt['Rasio vs BI'])} ({rt['Status']}), dan "
-             f"kurs beli {E.persen(rb['Rasio vs BI'])} ({rb['Status']})", True),
-            " terhadap kurs acuan Bank Indonesia. Rasio di atas 100% menjadi perhatian "
-            f"pengawasan, dan rasio ≥ {ctx.ambang_rasio:.0%} dikategorikan Waspada.")
+    _bullet(doc, f"Analisis rasio kurs per jenis valuta. Untuk valuta {val}: ",
+            (f"rasio kurs jual {_pct(rj['Rasio vs BI'])} ({_stat_kurs(rj['Rasio vs BI'], ctx.ambang_rasio)}), "
+             f"kurs tengah {_pct(rt['Rasio vs BI'])} ({_stat_kurs(rt['Rasio vs BI'], ctx.ambang_rasio)}), dan "
+             f"kurs beli {_pct(rb['Rasio vs BI'])} ({_stat_kurs(rb['Rasio vs BI'], ctx.ambang_rasio)})", True),
+            " terhadap kurs acuan Bank Indonesia. Adapun kriteria: rasio dikategorikan "
+            f"Normal apabila tidak melebihi 100%, Perhatian apabila di atas 100%, dan Waspada "
+            f"apabila mencapai {ctx.ambang_rasio:.0%} atau lebih terhadap acuan Bank Indonesia.")
+    if rincian_txt:
+        _para(doc, f"Rincian KUPVA BB yang menjadi perhatian (perubahan volume dtd "
+                   f"mencapai {ctx.ambang_dtd:.0%} atau lebih): ", (rincian_txt + ".", True))
     if wasp_kurs:
         _bullet(doc, f"Terdapat {len(wasp_kurs)} KUPVA BB dengan rasio kurs Kategori Waspada "
                      f"(≥ {ctx.ambang_rasio:.0%}) pada hari pelaporan: ",
@@ -319,28 +402,30 @@ def build_report(ctx, provinsi: str = "DKI Jakarta", penyusun: str = "") -> byte
                  "yang tersedia sampai dengan tanggal cek (lihat grafik §2 di bawah).")
     catatan_p = (f" Catatan: tanggal pembanding ({E.fmt_tgl(ctx.tgl_p)}) jatuh pada hari "
                  "non-transaksi (akhir pekan) sehingga basis pembanding dapat rendah dan "
-                 "persentase pertumbuhan dtd perlu dibaca secara hati-hati." if akhir_pekan else "")
-    _bullet(doc, f"Monitoring jumlah transaksi ({ctx.lbl_h} terhadap pembanding {ctx.lbl_p}) untuk "
-                 f"{', '.join(ctx.valutas)}: ",
-            (f"volume jual {E.persen(vj['Growth (dtd)'])} ({vj['Status']}) dan volume beli "
-             f"{E.persen(vb['Growth (dtd)'])} ({vb['Status']})", True),
-            f" antar periode. Kategori Normal apabila perubahan di bawah {ctx.ambang_dtd:.0%}, "
-            f"dan Waspada apabila {ctx.ambang_dtd:.0%} atau lebih." + catatan_p)
-    if wasp_vol:
-        _bullet(doc, f"Terdapat {len(wasp_vol)} KUPVA BB dengan jumlah transaksi Kategori Waspada "
-                     f"(perubahan ≥ {ctx.ambang_dtd:.0%} pada sisi jual dan/atau beli), yaitu: ",
-                (", ".join(wasp_vol) + ".", True))
+                 "persentase pertumbuhan dtd perlu dibaca secara berhati-hati." if akhir_pekan else "")
+    _bullet(doc, "Monitoring jumlah transaksi harian (tanggal cek terhadap tanggal pembanding "
+                 f"sebelumnya) untuk {', '.join(ctx.valutas)}: ",
+            (f"volume jual {_perub(vj['Growth (dtd)'])} dtd menjadi setara "
+             f"{_rp_kata(vj['Tanggal cek'])} ({_stat_vol(vj['Growth (dtd)'], ambv)}) dan volume beli "
+             f"{_perub(vb['Growth (dtd)'])} dtd menjadi setara "
+             f"{_rp_kata(vb['Tanggal cek'])} ({_stat_vol(vb['Growth (dtd)'], ambv)})", True),
+            f". Adapun kriteria: transaksi dikategorikan Waspada apabila volume NAIK mencapai "
+            f"{ctx.ambang_dtd:.0%} atau lebih (dtd); Perhatian apabila TURUN mencapai "
+            f"{ctx.ambang_dtd:.0%} atau lebih; selain itu Normal." + catatan_p)
+    if wasp_vol_naik:
+        _bullet(doc, f"Terdapat {len(wasp_vol_naik)} KUPVA BB dengan jumlah transaksi Kategori "
+                     f"Waspada (kenaikan dtd {ctx.ambang_dtd:.0%} atau lebih pada sisi jual dan/atau "
+                     "beli), yaitu: ",
+                (", ".join(wasp_vol_naik) + ".", True))
     else:
-        _bullet(doc, "Tidak terdapat KUPVA BB dengan jumlah transaksi Kategori Waspada pada "
-                     "periode ini.")
+        _bullet(doc, f"Tidak terdapat KUPVA BB dengan kenaikan jumlah transaksi mencapai "
+                     f"{ctx.ambang_dtd:.0%} atau lebih (Kategori Waspada) pada periode ini.")
     pdln = ("Pendalaman penyebab dilakukan dengan menginformasikan nama KUPVA BB, jenis valuta, "
-            "serta kurs yang digunakan (kurs jual, kurs tengah, dan kurs beli).")
+            "serta kurs yang digunakan.")
     if akhir_pekan:
         pdln += (" Karena tanggal pembanding adalah hari non-transaksi, lonjakan dtd dapat "
                  "dipengaruhi basis pembanding yang rendah.")
-    p = doc.add_paragraph()
-    p.paragraph_format.left_indent = Inches(0.25)
-    p.add_run(pdln).font.size = Pt(10.5)
+    _para(doc, pdln)
 
     # ====================================================================
     # 3. OBJEK MONITORING & ABSENSI
@@ -365,6 +450,9 @@ def build_report(ctx, provinsi: str = "DKI Jakarta", penyusun: str = "") -> byte
                      f"tanggal cek ({E.fmt_tgl(ctx.tgl_h)}).")
         _bullet(doc, "Kelengkapan penyampaian laporan: seluruh KUPVA BB terpilih lengkap "
                      "(terdapat catatan transaksi pada hari pelaporan).")
+    _para(doc, "Adapun kriteria: KUPVA BB dinilai telah menyampaikan apabila terdapat catatan "
+               "transaksi pada hari pelaporan; bila tidak terdapat, tergolong belum/tidak "
+               "menyampaikan dan menjadi tindak lanjut kelengkapan.", indent=0)
     _note(doc, "Catatan: data sumber tidak memuat cap waktu (timestamp) penyampaian, sehingga "
                "penilaian ketepatan terhadap batas pukul 12.00 dilakukan manual oleh KPwDN; "
                "indikator di atas memakai ketersediaan data transaksi pada hari pelaporan sebagai "
@@ -379,10 +467,6 @@ def build_report(ctx, provinsi: str = "DKI Jakarta", penyusun: str = "") -> byte
     _bullet(doc, "Apabila transaksi “Kategori Normal”, supervisory action berupa pengawasan offsite "
                  f"melalui pemantauan transaksi {g.lower()} terhadap KUPVA BB selama adanya gejolak "
                  "nilai tukar.")
-    if wasp_kurs or wasp_vol:
-        _bullet(doc, "Terhadap KUPVA BB “Kategori Waspada” dilakukan pendalaman penyebab: ",
-                (f"kurs — {', '.join(wasp_kurs) if wasp_kurs else 'tidak ada'}; "
-                 f"volume — {', '.join(wasp_vol) if wasp_vol else 'tidak ada'}.", True))
 
     # ====================================================================
     # GRAFIK §1 — KURS

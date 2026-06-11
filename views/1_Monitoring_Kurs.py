@@ -43,7 +43,32 @@ col1, col2 = st.columns([3, 2])
 col1.plotly_chart(fig, width='stretch')
 
 with col2:
-    if not rdf.empty:
+    mode = st.radio("Tampilan rasio", ["📈 Series", "📊 Bar"], horizontal=True,
+                    key="rasio_mode", label_visibility="collapsed")
+    if mode == "📈 Series":
+        # Rasio kurs tengah / acuan BI sepanjang rentang, satu garis per valuta.
+        rfig = go.Figure()
+        for v in ctx.valutas:
+            tkv = E.tren_kurs(data, v, ctx.tgl_h, ctx.pts, gran=g)
+            srs = tkv[["Tanggal", "Kurs Tengah", "Acuan BI"]].copy()
+            srs["Rasio"] = srs["Kurs Tengah"] / srs["Acuan BI"]
+            srs = srs.replace([np.inf, -np.inf], np.nan).dropna(subset=["Rasio"])
+            if not srs.empty:
+                rfig.add_trace(go.Scatter(x=srs["Tanggal"], y=srs["Rasio"], name=v,
+                                          mode="lines+markers"))
+        if rfig.data:
+            rfig.add_hline(y=ctx.ambang_rasio, line=dict(color=E.STATUS_WARNA["Waspada"], dash="dash"),
+                           annotation_text=f"Batas Waspada {ctx.ambang_rasio:.0%}",
+                           annotation_position="top left", annotation_font_size=10)
+            rfig.add_hline(y=1.0, line=dict(color=E.STATUS_WARNA["Perhatian"], dash="dot"))
+            rfig.update_layout(height=300, margin=dict(t=30, b=8, l=8, r=8),
+                               title=dict(text="Rasio kurs tengah vs BI (tren)", font=dict(size=15)),
+                               yaxis=dict(tickformat=".0%"), hovermode="x unified",
+                               legend=dict(orientation="h", y=-0.2))
+            st.plotly_chart(rfig, width='stretch')
+        else:
+            st.info("Belum ada rasio untuk ditampilkan sebagai series.")
+    elif not rdf.empty:
         bar = go.Figure(go.Bar(
             x=rdf["Rasio"], y=rdf["Valuta"], orientation="h",
             marker_color=[E.STATUS_WARNA["Waspada"] if x >= ctx.ambang_rasio
@@ -52,7 +77,7 @@ with col2:
             text=[E.persen(x) for x in rdf["Rasio"]], textposition="outside"))
         bar.add_vline(x=ctx.ambang_rasio, line=dict(color=E.STATUS_WARNA["Waspada"], dash="dash"))
         bar.add_vline(x=1.0, line=dict(color=E.STATUS_WARNA["Perhatian"], dash="dot"))
-        bar.update_layout(height=340, margin=dict(t=30, b=8, l=8, r=8),
+        bar.update_layout(height=300, margin=dict(t=30, b=8, l=8, r=8),
                           title=dict(text="Rasio kurs tengah vs BI", font=dict(size=15)),
                           xaxis=dict(tickformat=".0%"))
         st.plotly_chart(bar, width='stretch')
