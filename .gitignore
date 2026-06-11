@@ -1,0 +1,13 @@
+# Virtualenv
+env/
+.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Data pengguna (berisi hash password — jangan di-commit)
+data/users.xlsx
+
+# Streamlit secrets
+.streamlit/secrets.toml
