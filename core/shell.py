@@ -38,13 +38,14 @@ def main() -> None:
     p_profil    = st.Page("views/4_Profil_per_KUPVA.py",    title="🏦 Profil",    url_path="profil")
     p_risiko    = st.Page("views/5_Risiko_Valuta.py",       title="⚠️ Risiko",    url_path="risiko")
     p_laporan   = st.Page("views/6_Ekspor_Laporan.py",      title="📄 Laporan",   url_path="laporan")
+    p_tarikkurs = st.Page("views/7_Tarik_Kurs_BI.py",       title="🌐 Tarik Kurs", url_path="tarik-kurs")
 
     # 4 grup berurut sesuai alur kerja pengawas
     groups = [
         ("BERANDA",   [p_data, p_ringkasan]),
         ("ANALISIS",  [p_kurs, p_volume]),
         ("KEPATUHAN", [p_absensi, p_risiko]),
-        ("LAPORAN",   [p_profil, p_laporan]),
+        ("LAPORAN",   [p_profil, p_laporan, p_tarikkurs]),
     ]
     pages = [pg for _, gp in groups for pg in gp]
     nav_router = st.navigation(pages, position="hidden")
