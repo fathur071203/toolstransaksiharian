@@ -87,19 +87,43 @@ GLOBAL_CSS = """
     font-size: .9rem !important;
     text-align: center !important;
     justify-content: center !important;
-    padding: 8px 4px !important;
-    border-radius: 7px !important;
+    padding: 8px 6px !important;
+    border-radius: 8px 8px 0 0 !important;
     border-bottom: 3px solid transparent !important;
-    transition: background .15s ease, border-color .15s ease;
+    transition: background .18s ease, border-color .18s ease,
+                transform .18s ease, box-shadow .18s ease;
     white-space: nowrap !important;
+    position: relative !important;
   }
   div[data-testid="stPageLink"] a * { color: #fff !important; }
-  div[data-testid="stPageLink"] a:hover { background: rgba(255,255,255,0.13) !important; }
 
-  /* Halaman aktif → garis emas */
+  /* Hover (halaman yang BUKAN aktif) → terangkat + garis emas tipis */
+  div[data-testid="stPageLink"] a:hover:not([aria-current="page"]) {
+    background: rgba(255,255,255,0.16) !important;
+    border-bottom-color: rgba(200,169,81,0.6) !important;
+    transform: translateY(-1px) !important;
+  }
+
+  /* ---- Halaman AKTIF → mencolok: latar emas, teks biru tua, garis tebal ---- */
   div[data-testid="stPageLink"] a[aria-current="page"] {
-    border-bottom: 3px solid var(--bi-emas) !important;
-    background: rgba(255,255,255,0.14) !important;
+    background: var(--bi-emas) !important;
+    border-bottom: 3px solid #fff !important;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.22) !important;
+    font-weight: 800 !important;
+  }
+  div[data-testid="stPageLink"] a[aria-current="page"],
+  div[data-testid="stPageLink"] a[aria-current="page"] * {
+    color: #002855 !important;
+  }
+  /* Penanda "kamu di sini" — segitiga kecil emas di bawah tab aktif */
+  div[data-testid="stPageLink"] a[aria-current="page"]::after {
+    content: "" !important;
+    position: absolute !important;
+    left: 50% !important; bottom: -9px !important;
+    transform: translateX(-50%) !important;
+    border-left: 6px solid transparent !important;
+    border-right: 6px solid transparent !important;
+    border-top: 6px solid var(--bi-emas) !important;
   }
 
   /* Tombol Logout di navbar */

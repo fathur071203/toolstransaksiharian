@@ -4,17 +4,18 @@ SAKSI — Penyusun Laporan Word (.docx)
 Membentuk "Laporan Monitoring Harian Transaksi KUPVA BB" mengikuti template
 KPwDN Bank Indonesia, lengkap dengan narasi + data + seluruh grafik:
 
-Header  : banner BI + tanggal cek, rentang tren, valuta dianalisis, jumlah KUPVA.
-Seksi 1 : Analisis Monitoring Transaksi – KURS (a–d).
-Seksi 2 : Analisis Monitoring Transaksi – JUMLAH TRANSAKSI (a–c + pendalaman).
-Seksi 3 : Objek Monitoring & Absensi (a–c + catatan metodologi).
-Seksi 4 : Supervisory Action (a–b).
-Grafik  : §1 tren kurs (jual/tengah/beli) + tren kurs tengah multi-valuta + rasio
-          per valuta; §2 tren jumlah transaksi (jual & beli).
+Kop surat: letterhead BI + judul + Periode; baris meta (tanggal cek + cakupan KUPVA).
+Seksi 1 : Objek Monitoring & Absensi (jumlah KUPVA, telah/belum upload, donat
+          absensi, tabel penyampaian, tabel valuta dilaporkan + deskriptif).
+Seksi 2 : Analisis Jumlah Transaksi (growth dtd + grafik volume inline).
+Seksi 3 : Analisis Kurs (rasio vs BI + grafik tren kurs & rasio inline).
+Seksi 4 : Supervisory Action.
+Grafik disisipkan langsung di bawah seksinya agar alur baca mengalir.
 Seluruhnya sadar-periode (granularitas pada Konteks).
 """
 from __future__ import annotations
 
+from collections import Counter
 from io import BytesIO
 
 import matplotlib
@@ -25,7 +26,7 @@ import pandas as pd
 
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -74,6 +75,80 @@ def _banner(doc, judul: str) -> None:
     r1.bold = True
     r1.font.size = Pt(13)
     r1.font.color.rgb = _PUTIH
+
+
+def _cell_run(cell, text, *, align=WD_ALIGN_PARAGRAPH.CENTER, bold=False, size=10,
+              color=_PUTIH, para=None):
+    p = para if para is not None else cell.paragraphs[0]
+    p.alignment = align
+    p.paragraph_format.space_after = Pt(0)
+    r = p.add_run(text)
+    r.bold = bold
+    r.font.size = Pt(size)
+    r.font.color.rgb = color
+    return p
+
+
+def _letterhead(doc, provinsi: str, periode_txt: str, judul: str) -> None:
+    """Kop surat gaya Bank Indonesia: logo + BANK INDONESIA (atas), lalu baris
+    KPwDN (kiri) · judul laporan (tengah) · Periode (kanan)."""
+    t = doc.add_table(rows=2, cols=3)
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _no_borders(t)
+
+    # Baris 1 — logo + nama bank (satu sel digabung, latar biru tua)
+    top = t.rows[0].cells[0].merge(t.rows[0].cells[2])
+    _set_cell_bg(top, _BIRU_TUA)
+    _cell_run(top, "Ⓑ  BANK INDONESIA", bold=True, size=17)
+    _cell_run(top, "BANK SENTRAL REPUBLIK INDONESIA", bold=True, size=8,
+              para=top.add_paragraph())
+
+    # Baris 2 — KPwDN | judul | periode (latar biru bar)
+    left, mid, right = t.rows[1].cells
+    for c in (left, mid, right):
+        _set_cell_bg(c, _BIRU_BAR)
+    left.width = Inches(2.0)
+    mid.width = Inches(3.3)
+    right.width = Inches(1.8)
+    _cell_run(left, f"KPwDN Provinsi {provinsi}", align=WD_ALIGN_PARAGRAPH.LEFT, bold=True, size=9)
+    _cell_run(mid, judul, align=WD_ALIGN_PARAGRAPH.CENTER, bold=True, size=11)
+    _cell_run(right, f"Periode · {periode_txt}", align=WD_ALIGN_PARAGRAPH.RIGHT, bold=True, size=9)
+
+
+_ABU = RGBColor(0x80, 0x80, 0x80)
+
+
+def _field(paragraph, instr, size=8):
+    run = paragraph.add_run()
+    run.font.size = Pt(size)
+    run.font.color.rgb = _ABU
+    b = OxmlElement("w:fldChar"); b.set(qn("w:fldCharType"), "begin")
+    it = OxmlElement("w:instrText"); it.set(qn("xml:space"), "preserve"); it.text = instr
+    e = OxmlElement("w:fldChar"); e.set(qn("w:fldCharType"), "end")
+    run._r.append(b); run._r.append(it); run._r.append(e)
+
+
+def _running(doc, provinsi):
+    """Header & footer berulang tiap halaman (judul · KPwDN · Dokumen Internal · Halaman X/Y)."""
+    sec = doc.sections[0]
+
+    def _gabu(p, text):
+        r = p.add_run(text); r.font.size = Pt(8); r.font.color.rgb = _ABU; return r
+
+    hp = sec.header.paragraphs[0]
+    hp.paragraph_format.tab_stops.add_tab_stop(Inches(7.1), WD_TAB_ALIGNMENT.RIGHT)
+    _gabu(hp, "Laporan Monitoring Harian Transaksi KUPVA BB")
+    _gabu(hp, "\t")
+    _gabu(hp, f"KPwDN Provinsi {provinsi}")
+
+    fp = sec.footer.paragraphs[0]
+    fp.paragraph_format.tab_stops.add_tab_stop(Inches(7.1), WD_TAB_ALIGNMENT.RIGHT)
+    _gabu(fp, "Dokumen Internal - Bank Indonesia")
+    _gabu(fp, "\t")
+    _gabu(fp, "Halaman ")
+    _field(fp, "PAGE")
+    _gabu(fp, " dari ")
+    _field(fp, "NUMPAGES")
 
 
 def _center(doc, text, *, bold=False, italic=False, size=10, color=None):
@@ -127,9 +202,28 @@ def _label_grafik(doc, text: str) -> None:
     r.font.color.rgb = _BIRU_TEKS
 
 
-def _add_pic(doc, buf: BytesIO) -> None:
-    doc.add_picture(buf, width=Inches(6.4))
+def _add_pic(doc, buf: BytesIO, width: float = 6.4) -> None:
+    doc.add_picture(buf, width=Inches(width))
     doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _tabel(doc, headers, rows) -> None:
+    """Tabel berisi header berarsir biru + baris data, bergaris (Table Grid)."""
+    t = doc.add_table(rows=1, cols=len(headers))
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    t.style = "Table Grid"
+    for j, h in enumerate(headers):
+        cell = t.rows[0].cells[j]
+        _set_cell_bg(cell, _BIRU_BAR)
+        r = cell.paragraphs[0].add_run(str(h))
+        r.bold = True
+        r.font.size = Pt(9.5)
+        r.font.color.rgb = _PUTIH
+    for row in rows:
+        cells = t.add_row().cells
+        for j, v in enumerate(row):
+            r = cells[j].paragraphs[0].add_run("" if v is None else str(v))
+            r.font.size = Pt(9.5)
 
 
 def _para(doc, *segments, indent: float = 0.25) -> None:
@@ -212,285 +306,474 @@ def _png(fig) -> BytesIO:
     return buf
 
 
-def _chart_kurs(tk: pd.DataFrame, val: str) -> BytesIO:
-    fig, ax = plt.subplots(figsize=(7.2, 3.0))
-    for komp, c in {"Kurs Jual": "#E24B4A", "Kurs Tengah": "#185FA5", "Kurs Beli": "#1D9E75"}.items():
-        s = tk[["Tanggal", komp]].replace(0, np.nan).dropna()
-        ax.plot(s["Tanggal"], s[komp], marker="o", ms=3, color=c, label=komp, lw=1.6)
-    acu = tk[["Tanggal", "Acuan BI"]].dropna()
-    ax.plot(acu["Tanggal"], acu["Acuan BI"], "--", color="#888780", label="Acuan BI", lw=1.6)
-    ax.set_title(f"Tren kurs {val} (jual/tengah/beli, rata-rata KUPVA) vs acuan BI", fontsize=10)
-    ax.legend(fontsize=8, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.18))
-    ax.grid(alpha=0.25)
-    ax.tick_params(labelsize=8)
-    fig.autofmt_xdate(rotation=30)
+def _box(doc, title, *body):
+    """Kotak sorot (latar biru muda) berisi judul + paragraf isi."""
+    doc.add_paragraph()
+    t = doc.add_table(rows=1, cols=1)
+    t.style = "Table Grid"
+    cell = t.rows[0].cells[0]
+    _set_cell_bg(cell, "EAF1F8")
+    rt = cell.paragraphs[0].add_run(title)
+    rt.bold = True
+    rt.font.size = Pt(10)
+    rt.font.color.rgb = _BIRU_TEKS
+    for seg in body:
+        p = cell.add_paragraph()
+        r = p.add_run(seg)
+        r.font.size = Pt(10)
+
+
+def _num(doc, *segments):
+    p = doc.add_paragraph(style="List Number")
+    for seg in segments:
+        teks, bold = (seg, False) if isinstance(seg, str) else (seg[0], seg[1])
+        r = p.add_run(teks)
+        r.bold = bold
+        r.font.size = Pt(10.5)
+
+
+def _tabel_judul(doc, text):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    r = p.add_run(text)
+    r.bold = True
+    r.font.size = Pt(10)
+    r.font.color.rgb = _BIRU_TEKS
+
+
+_BULAN_PJG = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli",
+              "Agustus", "September", "Oktober", "November", "Desember"]
+
+
+def _tgl_panjang(t) -> str:
+    t = pd.Timestamp(t)
+    return f"{t.day} {_BULAN_PJG[t.month - 1]} {t.year}"
+
+
+# ----------------------------------------------------------------------------
+# Grafik 3 hari (H-2 s.d. H) — matplotlib, agregat seluruh KUPVA
+# ----------------------------------------------------------------------------
+def _png(fig) -> BytesIO:
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+
+_WK = {"Beli": "#1D9E75", "Tengah": "#185FA5", "Jual": "#E24B4A"}
+
+
+def _chart_absensi(n_lapor: int, n_belum: int) -> BytesIO:
+    fig, ax = plt.subplots(figsize=(3.8, 3.2))
+    seg = [(lbl, v, c) for lbl, v, c in
+           (("Telah lapor", n_lapor, "#1D9E75"), ("Belum lapor", n_belum, "#E24B4A")) if v > 0]
+    if seg:
+        ax.pie([s[1] for s in seg], labels=[f"{s[0]}\n({s[1]})" for s in seg],
+               colors=[s[2] for s in seg], autopct=lambda p: f"{p:.0f}%",
+               startangle=90, textprops=dict(fontsize=8),
+               wedgeprops=dict(width=0.42, edgecolor="white"))
+    ax.set_title("Absensi penyampaian laporan", fontsize=10)
+    ax.axis("equal")
     return _png(fig)
 
 
-def _chart_kurs_multi(data, ctx) -> BytesIO:
-    fig, ax = plt.subplots(figsize=(7.2, 3.2))
-    cmap = plt.cm.tab10
-    for i, v in enumerate(ctx.valutas):
-        tk = E.tren_kurs(data, v, ctx.tgl_h, ctx.pts, gran=ctx.granularitas)
-        s = tk[["Tanggal", "Kurs Tengah"]].replace(0, np.nan).dropna()
-        c = cmap(i % 10)
-        ax.plot(s["Tanggal"], s["Kurs Tengah"], marker="o", ms=3, color=c, lw=1.5,
-                label=f"{v} · KUPVA")
-        acu = tk[["Tanggal", "Acuan BI"]].dropna()
-        if not acu.empty:
-            ax.plot(acu["Tanggal"], acu["Acuan BI"], "--", color=c, lw=1.1, label=f"{v} · BI")
-    ax.set_title("Tren kurs tengah per valuta (KUPVA) vs acuan BI", fontsize=10)
-    ax.legend(fontsize=7, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.2))
-    ax.grid(alpha=0.25)
-    ax.tick_params(labelsize=8)
-    fig.autofmt_xdate(rotation=30)
-    return _png(fig)
-
-
-def _chart_rasio(data, ctx) -> BytesIO:
+def _chart_kurs3(data, val, pts, hari) -> BytesIO:
     cb = data["combine"]
-    rows = []
-    for v in ctx.valutas:
-        a = E.acuan_bi(data, v, ctx.tgl_h, gran=ctx.granularitas)
-        kr = E.kurs_rata2(cb, ctx.tgl_h, v, ctx.pts, gran=ctx.granularitas, acuan=a)["tengah"]
-        r = E.hitung_rasio(kr, a)
-        if r == r:
-            rows.append((v, r))
-    fig, ax = plt.subplots(figsize=(7.2, 2.6 + 0.25 * len(rows)))
-    if rows:
-        vs = [x[0] for x in rows]
-        rr = [x[1] for x in rows]
-        col = ["#E24B4A" if x >= ctx.ambang_rasio else ("#BA7517" if x > 1.0 else "#1D9E75")
-               for x in rr]
-        ax.barh(vs, rr, color=col)
-        ax.axvline(ctx.ambang_rasio, color="#E24B4A", ls="--", lw=1, label=f"Batas Waspada ({ctx.ambang_rasio:.0%})")
-        ax.axvline(1.0, color="#BA7517", ls=":", lw=1, label="100% (acuan BI)")
-        for i, x in enumerate(rr):
-            ax.text(x, i, f" {E.persen(x)}", va="center", fontsize=7)
-        ax.legend(fontsize=7, loc="lower right")
-        ax.invert_yaxis()
-    else:
-        ax.text(0.5, 0.5, "Tidak ada valuta dengan acuan BI untuk dirasiokan",
-                ha="center", va="center", fontsize=9)
-    ax.set_title("Rasio kurs tengah KUPVA vs acuan BI per valuta", fontsize=10)
+    xs = [E.fmt_tgl(t) for t in hari]
+    rows = {k: [] for k in ("bb", "bt", "bj", "kb", "kt", "kj")}
+    for t in hari:
+        bi = E.kurs_bi_komponen(data, val, t)
+        pt = E.kurs_rata2(cb, t, val, pts, gran="Harian", acuan=bi["tengah"])
+        rows["bb"].append(bi["beli"]); rows["bt"].append(bi["tengah"]); rows["bj"].append(bi["jual"])
+        rows["kb"].append(pt["beli"]); rows["kt"].append(pt["tengah"]); rows["kj"].append(pt["jual"])
+    fig, ax = plt.subplots(figsize=(6.7, 3.0))
+    for name, bi_s, k_s in (("Beli", rows["bb"], rows["kb"]),
+                            ("Tengah", rows["bt"], rows["kt"]),
+                            ("Jual", rows["bj"], rows["kj"])):
+        c = _WK[name]
+        ax.plot(xs, bi_s, "--s", color=c, ms=4, lw=1.4, label=f"BI {name}")
+        ax.plot(xs, k_s, "-o", color=c, ms=5, lw=1.9, label=f"KUPVA {name}")
+    ax.set_title(f"Tren kurs {val}: KUPVA BB vs Bank Indonesia (H-2 s.d. H)", fontsize=9.5)
+    ax.legend(fontsize=6.5, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.16))
+    ax.grid(alpha=0.25)
     ax.tick_params(labelsize=8)
     return _png(fig)
 
 
-def _chart_volume(tv: pd.DataFrame, gran: str) -> BytesIO:
-    fig, ax = plt.subplots(figsize=(7.2, 3.0))
-    x = np.arange(len(tv))
-    ax.bar(x - 0.2, tv["Jual"], width=0.4, color="#185FA5", label="Volume Jual (Rp)")
-    ax.bar(x + 0.2, tv["Beli"], width=0.4, color="#1D9E75", label="Volume Beli (Rp)")
+def _chart_rasio3(data, val, pts, hari, ambang) -> BytesIO:
+    from matplotlib.ticker import FuncFormatter
+    cb = data["combine"]
+    xs = [E.fmt_tgl(t) for t in hari]
+    rb, rt, rj = [], [], []
+    for t in hari:
+        bi = E.kurs_bi_komponen(data, val, t)
+        pt = E.kurs_rata2(cb, t, val, pts, gran="Harian", acuan=bi["tengah"])
+        rb.append(E.hitung_rasio(pt["beli"], bi["beli"]))
+        rt.append(E.hitung_rasio(pt["tengah"], bi["tengah"]))
+        rj.append(E.hitung_rasio(pt["jual"], bi["jual"]))
+    fig, ax = plt.subplots(figsize=(6.7, 3.0))
+    ax.plot(xs, rb, "-o", color=_WK["Beli"], lw=1.9, label="Rasio Beli")
+    ax.plot(xs, rt, "-o", color=_WK["Tengah"], lw=1.9, label="Rasio Tengah")
+    ax.plot(xs, rj, "-o", color=_WK["Jual"], lw=1.9, label="Rasio Jual")
+    ax.axhline(ambang, color="#E24B4A", ls="--", lw=1, label=f"Waspada {ambang:.0%}")
+    ax.axhline(1.0, color="#BA7517", ls=":", lw=1, label="100%")
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y * 100:.1f}%"))
+    ax.set_title(f"Tren rasio kurs {val} terhadap Bank Indonesia (H-2 s.d. H)", fontsize=9.5)
+    ax.legend(fontsize=6.5, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.16))
+    ax.grid(alpha=0.25)
+    ax.tick_params(labelsize=8)
+    return _png(fig)
+
+
+def _chart_volume3(data, val, pts, hari) -> BytesIO:
+    cb = data["combine"]
+    xs = [E.fmt_tgl(t) for t in hari]
+    J, B = [], []
+    for t in hari:
+        j, b = E.volume_jual_beli_lapor(cb, t, [val], pts, gran="Harian")
+        J.append(j); B.append(b)
+    x = np.arange(len(xs))
+    fig, ax = plt.subplots(figsize=(6.7, 3.0))
+    ax.bar(x - 0.2, J, 0.4, color="#185FA5", label="Volume Jual")
+    ax.bar(x + 0.2, B, 0.4, color="#1D9E75", label="Volume Beli")
     ax.set_xticks(x)
-    ax.set_xticklabels([E.fmt_periode(t, gran) if gran != "Harian" else E.fmt_tgl(t)
-                        for t in tv["Tanggal"]], rotation=35, ha="right", fontsize=7)
-    ax.set_title(f"Tren jumlah transaksi {gran.lower()} (Jual & Beli, Rp)", fontsize=10)
-    ax.legend(fontsize=8)
+    ax.set_xticklabels(xs, fontsize=8)
+    ax.set_title(f"Tren volume transaksi {val} (Jual & Beli, Rp) — H-2 s.d. H", fontsize=9.5)
+    ax.legend(fontsize=7)
     ax.grid(alpha=0.25, axis="y")
     ax.tick_params(axis="y", labelsize=8)
+    return _png(fig)
+
+
+def _chart_growth3(data, val, pts, hari_all, hari, ambang) -> BytesIO:
+    from matplotlib.ticker import FuncFormatter
+    cb = data["combine"]
+    xs = [E.fmt_tgl(t) for t in hari]
+    GJ, GB = [], []
+    for t in hari:
+        it = hari_all.index(t)
+        prev = hari_all[it - 1] if it > 0 else None
+        jh, bh = E.volume_jual_beli_lapor(cb, t, [val], pts, gran="Harian")
+        if prev is not None:
+            jp, bp = E.volume_jual_beli_lapor(cb, prev, [val], pts, gran="Harian")
+        else:
+            jp = bp = np.nan
+        GJ.append(E.growth(jh, jp)); GB.append(E.growth(bh, bp))
+    fig, ax = plt.subplots(figsize=(6.7, 3.0))
+    ax.plot(xs, GJ, "-o", color="#185FA5", lw=1.9, label="Growth Jual")
+    ax.plot(xs, GB, "-o", color="#1D9E75", lw=1.9, label="Growth Beli")
+    ax.axhline(ambang, color="#E24B4A", ls="--", lw=1)
+    ax.axhline(-ambang, color="#E24B4A", ls="--", lw=1)
+    ax.axhline(0, color="#888780", ls=":", lw=1)
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y * 100:.0f}%"))
+    ax.set_title(f"Tren pertumbuhan dtd {val} (Jual & Beli) — H-2 s.d. H", fontsize=9.5)
+    ax.legend(fontsize=7)
+    ax.grid(alpha=0.25)
+    ax.tick_params(labelsize=8)
     return _png(fig)
 
 
 # ----------------------------------------------------------------------------
 # Penyusun utama
 # ----------------------------------------------------------------------------
-def build_report(ctx, provinsi: str = "DKI Jakarta", penyusun: str = "") -> bytes:
-    """Bangun laporan .docx lengkap dari Konteks aktif; kembalikan bytes siap-unduh."""
+def build_report(ctx, provinsi: str = "DKI Jakarta", kota: str = "",
+                 pengesahan=None) -> bytes:
+    """Bangun laporan .docx (format 4 halaman) mengikuti template SAKSI.
+
+    `pengesahan` = daftar 4 tuple (header, peran, nama, jabatan) untuk Lembar
+    Pengesahan. Bila None, dipakai default (header: Dipersiapkan/Diperiksa/
+    Didukung/Disetujui oleh) dengan nama kosong."""
     g = ctx.granularitas
     data, cb = ctx.data, ctx.data["combine"]
-    val = ctx.valuta_fokus
     pts_all = E.daftar_pt(cb)
-    semua_pt = len(ctx.pts) >= len(pts_all)
+    total = len(pts_all)
+    tgl_h, tgl_p = ctx.tgl_h, ctx.tgl_p
+    ar, av = ctx.ambang_rasio, ctx.ambang_dtd
+    kota = kota or provinsi
+    hari_all = E.daftar_tanggal(cb)
+    hari = [t for t in hari_all if pd.Timestamp(t) <= pd.Timestamp(tgl_h)][-3:]
 
-    # ---- hitung data ----
-    absn = E.tabel_absensi(data, ctx.tgl_h, ctx.pts, gran=g)
-    absn = absn[absn["ID"].isin(ctx.pts)]
-    total = len(absn)
+    # ---- Absensi (§3) ----
+    absn = E.tabel_absensi(data, tgl_h, pts_all, gran=g)
     n_lapor = int((absn["Status"] == "Lengkap").sum())
     belum = absn[absn["Status"] == "Belum lapor"]["KUPVA BB"].tolist()
+    n_belum = len(belum)
+    ket = (n_lapor / total * 100) if total else 0.0
 
-    mtx = E.matriks_per_kupva(data, val, ctx.valutas, ctx.tgl_h, ctx.tgl_p,
-                              ctx.pts, ctx.ambang_rasio, ctx.ambang_dtd, gran=g)
-    mtx = mtx[mtx["ID"].isin(ctx.pts)]
-    wasp_kurs = mtx[mtx["Status Kurs"] == "Waspada"]["KUPVA BB"].tolist()
-    wasp_vol = mtx[mtx["Status Volume"] == "Waspada"]["KUPVA BB"].tolist()
+    # ---- Ringkasan transaksi ----
+    sub_h = E.filter_cb(cb, tgl=tgl_h, gran=g)
+    v_jual = float(sub_h[E.C_JUAL_RP].sum())
+    v_beli = float(sub_h[E.C_BELI_RP].sum())
 
-    tr = E.tabel_rasio_kurs(data, val, ctx.tgl_h, ctx.tgl_p, ctx.tgl_awal,
-                            ctx.pts, ctx.ambang_rasio, gran=g)
-    rj = tr[tr["Komponen"] == "Kurs Jual"].iloc[0]
-    rt = tr[tr["Komponen"] == "Kurs Tengah"].iloc[0]
-    rb = tr[tr["Komponen"] == "Kurs Beli"].iloc[0]
+    # ---- Matriks terintegrasi ----
+    mtx = E.ringkasan_kupva(data, tgl_h, tgl_p, ar, av, gran=g)
+    n_wk = int((mtx["Status Kurs"] == "Waspada").sum())
+    n_wv = int((mtx["Status Volume"] == "Waspada").sum())
+    daftar_wk = mtx[mtx["Status Kurs"] == "Waspada"]["KUPVA BB"].tolist()
+    daftar_wv = mtx[mtx["Status Volume"] == "Waspada"]["KUPVA BB"].tolist()
 
-    tb = E.tabel_volume(data, ctx.valutas, ctx.tgl_h, ctx.tgl_p, ctx.tgl_awal,
-                        ctx.pts, ctx.ambang_dtd, gran=g)
-    vj, vb = tb.iloc[0], tb.iloc[1]
+    # ---- Valuta dilaporkan ----
+    vals_h = E.valuta_pt_pada(data, pts_all, tgl_h, gran=g)
+    val = ctx.valuta_fokus if ctx.valuta_fokus in vals_h else (vals_h[0] if vals_h else ctx.valuta_fokus)
+    cnt = Counter()
+    for _, r in absn[absn["Status"] == "Lengkap"].iterrows():
+        cnt.update(E.valuta_pt_pada(data, r["ID"], tgl_h, gran=g))
+    top = cnt.most_common()
+    sebaran = "; ".join(f"{v} oleh {n} KUPVA BB" for v, n in top) if top else "-"
 
-    tk = E.tren_kurs(data, val, ctx.tgl_h, ctx.pts, gran=g)
-    tv = E.tren_volume(data, ctx.valutas, ctx.tgl_h, ctx.pts, gran=g)
-    tv = tv[tv["Tanggal"] >= pd.Timestamp(ctx.tgl_awal)]
+    # ---- Kurs ilustrasi (agregat) ----
+    bi_h = E.kurs_bi_komponen(data, val, tgl_h)
+    pt_h = E.kurs_rata2(cb, tgl_h, val, pts_all, gran=g, acuan=bi_h["tengah"])
+    r_beli = E.hitung_rasio(pt_h["beli"], bi_h["beli"])
+    r_jual = E.hitung_rasio(pt_h["jual"], bi_h["jual"])
+    r_teng = E.hitung_rasio(pt_h["tengah"], bi_h["tengah"])
 
-    akhir_pekan = g == "Harian" and E.is_weekend(ctx.tgl_p)
-    pt_lbl = f"Seluruh {total} KUPVA BB" if semua_pt else f"{total} KUPVA BB terpilih"
-    n_tanggal = sum(1 for t in E.daftar_tanggal(cb)
-                    if pd.Timestamp(ctx.tgl_awal) <= pd.Timestamp(t) <= pd.Timestamp(ctx.tgl_h))
-    tgl_cek_en = pd.Timestamp(ctx.tgl_h).strftime("%d %B %Y")
+    # ---- Volume agregat ----
+    jp = E.filter_cb(cb, tgl=tgl_p, gran=g)[E.C_JUAL_RP].sum() if tgl_p is not None else np.nan
+    bp = E.filter_cb(cb, tgl=tgl_p, gran=g)[E.C_BELI_RP].sum() if tgl_p is not None else np.nan
+    g_jual = E.growth(v_jual, jp)
+    g_beli = E.growth(v_beli, bp)
 
-    # rincian KUPVA BB perhatian (perubahan volume dtd >= ambang)
-    # Waspada volume = KENAIKAN dtd >= ambang (tidak dinormalkan / abs).
-    ambv = ctx.ambang_dtd
-    naik_mask = (mtx["Growth Jual"] >= ambv) | (mtx["Growth Beli"] >= ambv)
-    wasp_vol_naik = mtx[naik_mask]["KUPVA BB"].tolist()
+    # ---- Rincian KUPVA perubahan signifikan ----
+    rinci = []
+    for _, r in mtx[mtx["Status Volume"] == "Waspada"].iterrows():
+        pid = r["ID"]
+        jh, bh = E.volume_jual_beli_lapor(cb, tgl_h, None, [pid], gran=g)
+        j2, b2 = (E.volume_jual_beli_lapor(cb, tgl_p, None, [pid], gran=g)
+                  if tgl_p is not None else (np.nan, np.nan))
+        rinci.append(f"{r['KUPVA BB']} (vol jual {_perub(E.growth(jh, j2))} setara {_rp_kata(jh)}; "
+                     f"vol beli {_perub(E.growth(bh, b2))} setara {_rp_kata(bh)})")
+    rincian_txt = "; ".join(rinci)
 
-    rinci = mtx[mtx["Status Volume"] == "Waspada"]   # perubahan besar (naik/turun) → "perhatian"
-    rincian_txt = "; ".join(
-        f"{r['KUPVA BB']} (vol jual {_perub(r['Growth Jual'])} setara {_rp_kata(r['Vol Jual (H)'])}; "
-        f"vol beli {_perub(r['Growth Beli'])} setara {_rp_kata(r['Vol Beli (H)'])})"
-        for _, r in rinci.iterrows()
-    )
+    pbd = E.fmt_tgl(tgl_p) if tgl_p is not None else "-"
 
     # ---- dokumen ----
     doc = Document()
-    for s in doc.sections:
-        s.top_margin = Inches(0.5)
-        s.bottom_margin = Inches(0.5)
-        s.left_margin = Inches(0.7)
-        s.right_margin = Inches(0.7)
+    for sct in doc.sections:
+        sct.top_margin = Inches(0.5)
+        sct.bottom_margin = Inches(0.5)
+        sct.left_margin = Inches(0.7)
+        sct.right_margin = Inches(0.7)
+    _running(doc, provinsi)
 
-    _banner(doc, "OBJEK MONITORING DAN ABSENSI LAPORAN")
-    _center(doc, f"KPwBI Provinsi {provinsi}", bold=True, size=12, color=RGBColor(0, 0x28, 0x55))
-    _center(doc, f"Tanggal cek : {tgl_cek_en}   |   "
-                 f"Rentang tren: {E.fmt_tgl(ctx.tgl_awal)} - {E.fmt_tgl(ctx.tgl_h)}   |   "
-                 f"{n_tanggal} tanggal dipilih", size=10)
-    _center(doc, f"Laporan Monitoring {g} Transaksi KUPVA BB", bold=True, italic=True, size=11)
-    _note(doc, f"Valuta dianalisis: {val}   |   PT/KUPVA BB: {pt_lbl}")
+    _letterhead(doc, provinsi, pd.Timestamp(tgl_h).strftime("%d/%m/%Y"),
+                f"Laporan Monitoring {g} Transaksi KUPVA BB")
+    _center(doc, f"Tanggal cek (H): {_tgl_panjang(tgl_h)}   ·   Pembanding (H-1): {pbd}   ·   "
+                 f"Objek monitoring: {total} KUPVA BB", size=9)
 
-    # ====================================================================
-    # 1. ANALISIS MONITORING TRANSAKSI – KURS
-    # ====================================================================
-    _section_bar(doc, f"1.  ANALISIS MONITORING TRANSAKSI {g.upper()} – KURS")
-    _bullet(doc, "Grafik tren kurs jual, kurs tengah, dan kurs beli masing-masing jenis valuta "
-                 "menggunakan seluruh tanggal data yang tersedia sampai dengan tanggal cek "
-                 "(lihat grafik §1 di bawah).")
-    _bullet(doc, "Grafik tren rasio perbandingan kurs KUPVA BB terhadap kurs Bank Indonesia per "
-                 "jenis valuta menggunakan seluruh tanggal data yang tersedia sampai dengan tanggal cek.")
-    _bullet(doc, f"Analisis rasio kurs per jenis valuta. Untuk valuta {val}: ",
-            (f"rasio kurs jual {_pct(rj['Rasio vs BI'])} ({_stat_kurs(rj['Rasio vs BI'], ctx.ambang_rasio)}), "
-             f"kurs tengah {_pct(rt['Rasio vs BI'])} ({_stat_kurs(rt['Rasio vs BI'], ctx.ambang_rasio)}), dan "
-             f"kurs beli {_pct(rb['Rasio vs BI'])} ({_stat_kurs(rb['Rasio vs BI'], ctx.ambang_rasio)})", True),
-            " terhadap kurs acuan Bank Indonesia. Adapun kriteria: rasio dikategorikan "
-            f"Normal apabila tidak melebihi 100%, Perhatian apabila di atas 100%, dan Waspada "
-            f"apabila mencapai {ctx.ambang_rasio:.0%} atau lebih terhadap acuan Bank Indonesia.")
+    # ====================== BAGIAN 1 — ABSENSI ======================
+    _section_bar(doc, "BAGIAN 1 · OBJEK MONITORING DAN ABSENSI LAPORAN")
+    _note(doc, "Penyampaian, ketepatan waktu (H+1 pukul 12.00), dan kelengkapan laporan - modul Absensi (§3).")
+    _para(doc, "Aspek absensi merupakan fondasi dari keseluruhan asesmen harian, karena keandalan "
+               "analisis kurs (Bagian 2) maupun jumlah transaksi (Bagian 3) sepenuhnya bergantung pada "
+               "kelengkapan dan ketepatan waktu laporan yang disampaikan KUPVA BB. Pada tanggal cek "
+               f"{_tgl_panjang(tgl_h)}, objek monitoring mencakup ", (f"{total} KUPVA BB", True),
+               ". Objek tersebut dipilih karena secara kumulatif merepresentasikan mayoritas - minimum "
+               f"50% - nilai transaksi jual dan beli di wilayah kerja KPwDN Provinsi {provinsi}, sehingga "
+               "gambaran yang dihasilkan telah cukup mewakili dinamika transaksi penukaran valuta asing "
+               "di wilayah dimaksud.", indent=0)
+    _para(doc, f"Dari {total} objek monitoring tersebut, sebanyak ",
+          (f"{n_lapor} KUPVA BB telah menyampaikan", True), " (mengunggah) laporan transaksi harian, "
+          "sedangkan ", (f"{n_belum} KUPVA BB belum menyampaikan", True),
+          f", sehingga ketepatan penyampaian tercatat ", (f"{ket:.1f}%", True),
+          ". Penilaian mencakup dua dimensi yang berbeda namun saling melengkapi, yaitu kelengkapan - "
+          "dinilai dari ketersediaan catatan transaksi pada hari pelaporan - dan ketepatan waktu "
+          "terhadap batas H+1 maksimal pukul 12.00 waktu setempat. Mengingat data sumber belum memuat "
+          "cap waktu (timestamp) penyampaian, penilaian ketepatan waktu dilakukan secara manual oleh "
+          "KPwDN. Tingkat ketepatan penyampaian merupakan indikator awal kepatuhan pelaporan: ketepatan "
+          "yang menurun maupun KUPVA BB yang berulang kali tidak menyampaikan laporan perlu dicermati "
+          "sebagai potensi titik buta (blind spot) pengawasan sekaligus indikasi persoalan kepatuhan "
+          "yang lebih luas.", indent=0)
+    _add_pic(doc, _chart_absensi(n_lapor, n_belum), width=3.4)
+
+    _tabel_judul(doc, "Tabel 1.1 - Status penyampaian laporan per KUPVA BB")
+    rows11 = [[r["KUPVA BB"], "Sudah upload" if r["Status"] == "Lengkap" else "Belum upload",
+               len(E.valuta_pt_pada(data, r["ID"], tgl_h, gran=g)), E.rupiah(r["Volume H (Rp)"])]
+              for _, r in absn.iterrows()]
+    _tabel(doc, ["KUPVA BB", "Penyampaian", "Jml valuta", "Volume (Rp)"], rows11)
+
+    _box(doc, "KUPVA BB yang perlu ditindaklanjuti",
+         f"Belum menyampaikan laporan pada tanggal cek: {', '.join(belum) if belum else 'tidak ada'}.",
+         "Tindak lanjut atas kelengkapan dan ketepatan waktu penyampaian diuraikan pada Bagian 4 "
+         "(Supervisory Action).")
+
+    _tabel_judul(doc, "Tabel 1.2 - Jenis valuta yang dilaporkan per KUPVA BB")
+    rows12 = []
+    for _, r in absn[absn["Status"] == "Lengkap"].iterrows():
+        vs = E.valuta_pt_pada(data, r["ID"], tgl_h, gran=g)
+        rows12.append([r["KUPVA BB"], ", ".join(vs) if vs else "-", len(vs)])
+    _tabel(doc, ["KUPVA BB", "Valuta dilaporkan", "Jml valuta"], rows12)
+    if top:
+        _para(doc, f"Pada aspek kelengkapan jenis valuta, terdapat ", (f"{len(cnt)} jenis valuta", True),
+              f" yang dilaporkan oleh {n_lapor} KUPVA BB pada tanggal cek. Valuta yang paling banyak "
+              f"dilaporkan adalah ", (f"{top[0][0]} (oleh {top[0][1]} dari {n_lapor} KUPVA BB)", True),
+              ". Konsentrasi pelaporan pada valuta tertentu menggambarkan profil dan preferensi "
+              "transaksi nasabah di wilayah kerja, sekaligus menjadi penanda valuta mana yang paling "
+              f"perlu dicermati pada analisis kurs (Bagian 2) dan volume (Bagian 3). Sebaran "
+              f"selengkapnya: {sebaran}.", indent=0)
+    _note(doc, "Kriteria penilaian: KUPVA BB dinilai telah menyampaikan apabila terdapat catatan "
+               "transaksi pada hari pelaporan. Oleh karena data sumber tidak memuat cap waktu "
+               "penyampaian, penilaian ketepatan terhadap batas H+1 pukul 12.00 dilakukan secara manual "
+               "oleh KPwDN.")
+
+    # ====================== BAGIAN 2 — KURS ======================
+    _section_bar(doc, f"BAGIAN 2 · ANALISIS MONITORING TRANSAKSI {g.upper()} — KURS")
+    _note(doc, "Kewajaran kurs KUPVA BB terhadap kurs acuan Bank Indonesia - modul Kurs (§1).")
+    _para(doc, "Analisis kurs menilai kewajaran kurs yang ditetapkan KUPVA BB dengan membandingkannya "
+               "terhadap kurs acuan Bank Indonesia untuk masing-masing jenis valuta, melalui rasio "
+               "kurs = kurs KUPVA ÷ kurs Bank Indonesia. Pemantauan ini penting untuk menjaga "
+               "perlindungan konsumen dan integritas pasar, sebab deviasi yang terlalu lebar terhadap "
+               "acuan dapat mengindikasikan margin yang berlebihan atau praktik penetapan kurs yang "
+               "tidak wajar. Rasio dikategorikan ke dalam tiga tingkat, yaitu Normal apabila tidak "
+               "melebihi 100%, Perhatian apabila berada di atas 100%, dan Waspada apabila mencapai "
+               f"{ar:.0%} atau lebih terhadap kurs acuan Bank Indonesia. KPwDN menghitung rata-rata "
+               "rasio atas seluruh objek monitoring untuk tiap jenis valuta; rasio di atas 100% menjadi "
+               f"perhatian pengawasan, dengan penekanan khusus pada rasio yang menyentuh ambang Waspada "
+               f"(≥ {ar:.0%}) karena menandakan deviasi yang signifikan.", indent=0)
+    _para(doc, "Rasio dirinci ke dalam tiga komponen - kurs beli, kurs jual, dan kurs tengah - yang "
+               "masing-masing memberikan informasi berbeda. Status akhir kurs per valuta ditetapkan "
+               "dari kategori terburuk di antara ketiga komponen tersebut, sehingga satu komponen yang "
+               "menyentuh ambang Waspada sudah cukup menjadikan valuta dimaksud berstatus Waspada. "
+               f"Sebagai ilustrasi untuk valuta {val}, ",
+          (f"rasio kurs beli tercatat {_pct(r_beli)} ({_stat_kurs(r_beli, ar)}), kurs jual {_pct(r_jual)} "
+           f"({_stat_kurs(r_jual, ar)}), dan kurs tengah {_pct(r_teng)} ({_stat_kurs(r_teng, ar)})", True),
+          ". Selain besaran pada tanggal cek, arah dan persistensi pergerakan juga penting untuk "
+          "dicermati: deviasi yang muncul sesaat memiliki bobot pengawasan yang berbeda dengan deviasi "
+          "yang berulang selama beberapa hari. Tren kurs dan tren rasio terhadap acuan sepanjang H-2 "
+          "sampai dengan H pelaporan disajikan pada grafik berikut, sedangkan rincian rasio per jenis "
+          "valuta atas agregat seluruh KUPVA BB disajikan pada Tabel 2.1.", indent=0)
+    _tabel_judul(doc, f"Grafik 2.1 - Tren kurs {val} (Beli · Tengah · Jual): KUPVA BB vs Bank Indonesia · H-2 s.d. H")
+    _add_pic(doc, _chart_kurs3(data, val, pts_all, hari))
+    _tabel_judul(doc, f"Grafik 2.2 - Tren rasio kurs {val} (Beli · Tengah · Jual) terhadap Bank Indonesia · H-2 s.d. H")
+    _add_pic(doc, _chart_rasio3(data, val, pts_all, hari, ar))
+
+    _tabel_judul(doc, "Tabel 2.1 - Rincian rasio kurs per valuta (agregat seluruh KUPVA BB)")
+    tk = E.tabel_kurs_komponen(data, pts_all, tgl_h, vals_h, ar, gran=g)
+    rows21 = [[r["Valuta"], _pct(r["Rasio Beli"]), _pct(r["Rasio Jual"]), _pct(r["Rasio Tengah"]),
+               r["Status Akhir"]] for _, r in tk.iterrows()]
+    _tabel(doc, ["Valuta", "Rasio Beli", "Rasio Jual", "Rasio Tengah", "Status Akhir"], rows21)
+
+    if daftar_wk:
+        narasi_wk = (f"Terdapat {n_wk} KUPVA BB dengan rasio kurs berkategori Waspada (≥ {ar:.0%}) pada "
+                     f"tanggal cek, yaitu {', '.join(daftar_wk)}.")
+    else:
+        narasi_wk = (f"Tidak terdapat KUPVA BB dengan rasio kurs berkategori Waspada (≥ {ar:.0%}) pada "
+                     "tanggal cek; seluruh objek monitoring tergolong Normal/Perhatian. Rasio di atas "
+                     "100% tetap menjadi perhatian pengawasan.")
+    _box(doc, "Temuan dan pendalaman — Kurs", narasi_wk,
+         "Pendalaman penyebab terhadap KUPVA BB berkategori Waspada dilakukan dengan menginformasikan "
+         "nama KUPVA BB, jenis valuta, serta kurs (beli/tengah/jual) yang digunakan, sebagaimana "
+         "ditindaklanjuti pada Bagian 4.")
+
+    # ====================== BAGIAN 3 — VOLUME ======================
+    _section_bar(doc, f"BAGIAN 3 · ANALISIS MONITORING TRANSAKSI {g.upper()} — JUMLAH TRANSAKSI")
+    _note(doc, "Pertumbuhan volume transaksi day-to-day (dtd) - modul Volume (§2).")
+    _para(doc, "Analisis jumlah transaksi memantau pergerakan volume transaksi harian guna mendeteksi "
+               "anomali yang berpotensi mengindikasikan transaksi tidak wajar. Pengukuran dilakukan "
+               "melalui pertumbuhan day-to-day (dtd) = (nilai tanggal cek - nilai pembanding) ÷ nilai "
+               f"pembanding, yang membandingkan {E.fmt_tgl(tgl_h)} terhadap tanggal transaksi pembanding "
+               f"{pbd}. Suatu transaksi dikategorikan Waspada apabila terjadi perubahan - baik "
+               f"peningkatan maupun penurunan - sebesar {av:.0%} atau lebih (dtd) pada sisi jual dan/atau "
+               f"beli, dan Normal apabila perubahan di bawah {av:.0%}. Lonjakan naik (≥ {av:.0%}) dapat "
+               f"mengindikasikan transaksi yang tidak biasa, sedangkan penurunan tajam (turun ≥ {av:.0%}) "
+               "dapat mengindikasikan pergeseran aktivitas ke kanal lain ataupun underreporting; keduanya "
+               "sama-sama relevan dari perspektif kewaspadaan dan pencegahan APU-PPT.", indent=0)
+    _para(doc, "Secara agregat untuk seluruh valuta, ",
+          (f"volume jual {_perub(g_jual)} dtd menjadi setara {_rp_kata(v_jual)} ({_stat_vol(g_jual, av)}) "
+           f"dan volume beli {_perub(g_beli)} dtd menjadi setara {_rp_kata(v_beli)} "
+           f"({_stat_vol(g_beli, av)})", True),
+          ". Selisih ini menggambarkan posisi neto transaksi pada tanggal cek; ketidakseimbangan yang "
+          "besar antara sisi jual dan beli dapat menjadi bahan pencermatan lebih lanjut. Status akhir "
+          "volume per valuta ditetapkan dari kategori terburuk antar sisi (jual/beli), sehingga anomali "
+          "pada satu sisi sudah cukup memunculkan status Waspada. Tren volume transaksi (jual dan beli) "
+          "serta pertumbuhan dtd sepanjang H-2 sampai dengan H pelaporan disajikan pada grafik berikut, "
+          "sedangkan rincian pertumbuhan per jenis valuta atas agregat seluruh KUPVA BB disajikan pada "
+          "Tabel 3.1.", indent=0)
+    _tabel_judul(doc, f"Grafik 3.1 - Tren volume transaksi {val} (Jual · Beli) · H-2 s.d. H")
+    _add_pic(doc, _chart_volume3(data, val, pts_all, hari))
+    _tabel_judul(doc, f"Grafik 3.2 - Tren pertumbuhan dtd {val} (Jual · Beli) · H-2 s.d. H")
+    _add_pic(doc, _chart_growth3(data, val, pts_all, hari_all, hari, av))
+
+    _tabel_judul(doc, "Tabel 3.1 - Rincian volume dan pertumbuhan per valuta (agregat seluruh KUPVA BB)")
+    tv = E.tabel_volume_komponen(data, pts_all, tgl_h, tgl_p, vals_h, av, gran=g)
+    rows31 = [[r["Valuta"], E.rupiah(r["Jual (H)"]), _perub(r["Growth Jual"]),
+               E.rupiah(r["Beli (H)"]), _perub(r["Growth Beli"]), r["Status Akhir"]]
+              for _, r in tv.iterrows()]
+    _tabel(doc, ["Valuta", "Vol Jual (H)", "Growth Jual", "Vol Beli (H)", "Growth Beli", "Status Akhir"], rows31)
+
+    body3 = []
+    if daftar_wv:
+        body3.append(f"Terdapat {n_wv} KUPVA BB dengan jumlah transaksi berkategori Waspada "
+                     f"(perubahan dtd ≥ {av:.0%} pada sisi jual dan/atau beli), yaitu: {', '.join(daftar_wv)}.")
+    else:
+        body3.append(f"Tidak terdapat KUPVA BB dengan perubahan jumlah transaksi mencapai {av:.0%} atau "
+                     "lebih (kategori Waspada) pada tanggal cek.")
     if rincian_txt:
-        _para(doc, f"Rincian KUPVA BB yang menjadi perhatian (perubahan volume dtd "
-                   f"mencapai {ctx.ambang_dtd:.0%} atau lebih): ", (rincian_txt + ".", True))
-    if wasp_kurs:
-        _bullet(doc, f"Terdapat {len(wasp_kurs)} KUPVA BB dengan rasio kurs Kategori Waspada "
-                     f"(≥ {ctx.ambang_rasio:.0%}) pada hari pelaporan: ",
-                (", ".join(wasp_kurs) + ".", True))
-    else:
-        _bullet(doc, f"Tidak terdapat KUPVA BB dengan rasio kurs Kategori Waspada "
-                     f"(≥ {ctx.ambang_rasio:.0%}) pada hari pelaporan; seluruh objek monitoring "
-                     "tergolong Normal. Rasio di atas 100% tetap menjadi perhatian pengawasan, "
-                     "namun belum melampaui ambang Waspada.")
+        body3.append(f"Rincian KUPVA BB dengan perubahan volume signifikan: {rincian_txt}.")
+    body3.append("Pendalaman penyebab dilakukan dengan menginformasikan nama KUPVA BB, jenis valuta, "
+                 "serta kurs (beli/tengah/jual) yang digunakan, sebagaimana ditindaklanjuti pada Bagian 4.")
+    _box(doc, "Temuan dan pendalaman — Jumlah transaksi", *body3)
 
-    # ====================================================================
-    # 2. ANALISIS MONITORING TRANSAKSI – JUMLAH TRANSAKSI
-    # ====================================================================
-    _section_bar(doc, f"2.  ANALISIS MONITORING TRANSAKSI {g.upper()} – JUMLAH TRANSAKSI")
-    _bullet(doc, "Grafik tren jumlah transaksi (jual & beli) menggunakan seluruh tanggal data "
-                 "yang tersedia sampai dengan tanggal cek (lihat grafik §2 di bawah).")
-    catatan_p = (f" Catatan: tanggal pembanding ({E.fmt_tgl(ctx.tgl_p)}) jatuh pada hari "
-                 "non-transaksi (akhir pekan) sehingga basis pembanding dapat rendah dan "
-                 "persentase pertumbuhan dtd perlu dibaca secara berhati-hati." if akhir_pekan else "")
-    _bullet(doc, "Monitoring jumlah transaksi harian (tanggal cek terhadap tanggal pembanding "
-                 f"sebelumnya) untuk {', '.join(ctx.valutas)}: ",
-            (f"volume jual {_perub(vj['Growth (dtd)'])} dtd menjadi setara "
-             f"{_rp_kata(vj['Tanggal cek'])} ({_stat_vol(vj['Growth (dtd)'], ambv)}) dan volume beli "
-             f"{_perub(vb['Growth (dtd)'])} dtd menjadi setara "
-             f"{_rp_kata(vb['Tanggal cek'])} ({_stat_vol(vb['Growth (dtd)'], ambv)})", True),
-            f". Adapun kriteria: transaksi dikategorikan Waspada apabila volume NAIK mencapai "
-            f"{ctx.ambang_dtd:.0%} atau lebih (dtd); Perhatian apabila TURUN mencapai "
-            f"{ctx.ambang_dtd:.0%} atau lebih; selain itu Normal." + catatan_p)
-    if wasp_vol_naik:
-        _bullet(doc, f"Terdapat {len(wasp_vol_naik)} KUPVA BB dengan jumlah transaksi Kategori "
-                     f"Waspada (kenaikan dtd {ctx.ambang_dtd:.0%} atau lebih pada sisi jual dan/atau "
-                     "beli), yaitu: ",
-                (", ".join(wasp_vol_naik) + ".", True))
-    else:
-        _bullet(doc, f"Tidak terdapat KUPVA BB dengan kenaikan jumlah transaksi mencapai "
-                     f"{ctx.ambang_dtd:.0%} atau lebih (Kategori Waspada) pada periode ini.")
-    pdln = ("Pendalaman penyebab dilakukan dengan menginformasikan nama KUPVA BB, jenis valuta, "
-            "serta kurs yang digunakan.")
-    if akhir_pekan:
-        pdln += (" Karena tanggal pembanding adalah hari non-transaksi, lonjakan dtd dapat "
-                 "dipengaruhi basis pembanding yang rendah.")
-    _para(doc, pdln)
+    # ====================== BAGIAN 4 — SUPERVISORY ======================
+    _section_bar(doc, "BAGIAN 4 · SUPERVISORY ACTION")
+    _note(doc, "Sintesa status akhir per KUPVA BB dan rekomendasi tindakan pengawasan.")
+    _para(doc, "Hasil analisis absensi (Bagian 1), kurs (Bagian 2), dan jumlah transaksi (Bagian 3) "
+               "disintesiskan menjadi status akhir terintegrasi per KUPVA BB sebagaimana disajikan pada "
+               "Tabel 4.1. Status akhir ditetapkan dari gabungan kondisi terburuk antar aspek kurs dan "
+               "aspek volume - sehingga status Waspada pada salah satu aspek akan menjadikan status "
+               "akhir KUPVA BB tersebut Waspada - sedangkan KUPVA BB yang belum menyampaikan laporan "
+               "berstatus “Tanpa data”. Status akhir inilah yang menentukan bentuk dan intensitas "
+               "tindakan pengawasan: kategori Normal ditangani melalui pemantauan offsite rutin, "
+               "kategori Perhatian melalui pemantauan yang lebih dekat, kategori Waspada melalui "
+               "pendalaman dan klarifikasi, sedangkan status Tanpa data ditindaklanjuti melalui "
+               "penegakan kewajiban pelaporan.", indent=0)
+    _tabel_judul(doc, "Tabel 4.1 - Matriks terintegrasi dan status akhir per KUPVA BB")
+    rows41 = [[r["KUPVA BB"], r["Absensi"], r["Status Kurs"], r["Status Volume"], r["Status Akhir"]]
+              for _, r in mtx.iterrows()]
+    _tabel(doc, ["KUPVA BB", "Absensi", "Status Kurs", "Status Volume", "Status Akhir"], rows41)
+    _para(doc, "Mengacu pada hasil di atas, KPwDN menetapkan tindakan pengawasan sebagai berikut.", indent=0)
+    _num(doc, ("Pengawasan offsite atas KUPVA BB kategori Normal. ", True),
+         "Melaksanakan pemantauan offsite secara berkelanjutan terhadap KUPVA BB berkategori Normal, "
+         "dengan intensitas yang ditingkatkan pada periode terjadinya gejolak nilai tukar, guna "
+         "memastikan kurs dan volume transaksi tetap berada pada kisaran wajar tanpa memerlukan "
+         "tindakan korektif lebih lanjut.")
+    _num(doc, ("Tindak lanjut penyampaian laporan bagi KUPVA BB belum/sebagian lapor. ", True),
+         f"Menyampaikan tindak lanjut kepada {', '.join(belum) if belum else 'tidak ada'} atas "
+         "kelengkapan dan ketepatan waktu penyampaian laporan transaksi harian sesuai batas H+1 pukul "
+         "12.00 waktu setempat, serta memantau kepatuhan penyampaian pada periode berikutnya.")
+    _num(doc, ("Pendalaman atas KUPVA BB kategori Waspada. ", True),
+         "Melakukan pendalaman penyebab terhadap KUPVA BB dengan kurs berkategori Waspada "
+         f"({', '.join(daftar_wk) if daftar_wk else 'tidak ada'}) dan/atau jumlah transaksi berkategori "
+         f"Waspada ({', '.join(daftar_wv) if daftar_wv else 'tidak ada'}). Pendalaman dilakukan dengan "
+         "menginformasikan nama KUPVA BB, jenis valuta, serta kurs (beli/tengah/jual) yang digunakan, "
+         "dan apabila diperlukan ditindaklanjuti dengan klarifikasi langsung atau permintaan penjelasan "
+         "kepada KUPVA BB terkait.")
+    _para(doc, "Seluruh tindakan pengawasan di atas didokumentasikan sebagai dasar pemantauan harian "
+               "yang berkesinambungan. Eskalasi tindak lanjut dilakukan apabila kondisi Waspada bersifat "
+               "persisten atau berulang pada KUPVA BB yang sama, atau apabila pendalaman mengindikasikan "
+               "adanya potensi pelanggaran ketentuan.", indent=0)
 
-    # ====================================================================
-    # 3. OBJEK MONITORING & ABSENSI
-    # ====================================================================
-    _section_bar(doc, "3.  OBJEK MONITORING & ABSENSI")
-    _bullet(doc, f"Jumlah KUPVA BB yang dimonitor pada tanggal cek: ",
-            (f"{n_lapor} KUPVA BB.", True),
-            " Objek monitoring mencerminkan minimum 50% dari total transaksi jual dan beli "
-            "KUPVA BB di KPwDN (mayoritas transaksi).")
-    if belum:
-        _bullet(doc, "Ketepatan waktu penyampaian (H+1 maks. pukul 12.00 waktu setempat): "
-                     f"dari {total} KUPVA BB dipantau, {n_lapor} telah menyampaikan data transaksi "
-                     f"untuk tanggal cek ({E.fmt_tgl(ctx.tgl_h)}). ",
-                (f"Sebanyak {len(belum)} KUPVA BB belum/tidak menyampaikan data: "
-                 f"{', '.join(belum)}.", True))
-        _bullet(doc, "Kelengkapan penyampaian laporan: KUPVA BB berikut perlu ditindaklanjuti "
-                     "karena tidak terdapat catatan transaksi pada hari pelaporan: ",
-                (", ".join(belum) + ".", True))
-    else:
-        _bullet(doc, "Ketepatan waktu penyampaian (H+1 maks. pukul 12.00 waktu setempat): "
-                     f"seluruh {total} KUPVA BB terpilih telah menyampaikan data transaksi untuk "
-                     f"tanggal cek ({E.fmt_tgl(ctx.tgl_h)}).")
-        _bullet(doc, "Kelengkapan penyampaian laporan: seluruh KUPVA BB terpilih lengkap "
-                     "(terdapat catatan transaksi pada hari pelaporan).")
-    _para(doc, "Adapun kriteria: KUPVA BB dinilai telah menyampaikan apabila terdapat catatan "
-               "transaksi pada hari pelaporan; bila tidak terdapat, tergolong belum/tidak "
-               "menyampaikan dan menjadi tindak lanjut kelengkapan.", indent=0)
-    _note(doc, "Catatan: data sumber tidak memuat cap waktu (timestamp) penyampaian, sehingga "
-               "penilaian ketepatan terhadap batas pukul 12.00 dilakukan manual oleh KPwDN; "
-               "indikator di atas memakai ketersediaan data transaksi pada hari pelaporan sebagai "
-               "proksi penyampaian/kelengkapan.")
-
-    # ====================================================================
-    # 4. SUPERVISORY ACTION
-    # ====================================================================
-    _section_bar(doc, "4.  SUPERVISORY ACTION")
-    _bullet(doc, "Berdasarkan analisis di atas, KPwDN memberikan rekomendasi tindakan pengawasan "
-                 "kepada KUPVA BB di KPwDN.")
-    _bullet(doc, "Apabila transaksi “Kategori Normal”, supervisory action berupa pengawasan offsite "
-                 f"melalui pemantauan transaksi {g.lower()} terhadap KUPVA BB selama adanya gejolak "
-                 "nilai tukar.")
-
-    # ====================================================================
-    # GRAFIK §1 — KURS
-    # ====================================================================
-    _label_grafik(doc, "Grafik §1 — Tren Kurs & Rasio Kurs (seluruh tanggal data sampai tanggal cek):")
-    _add_pic(doc, _chart_kurs(tk, val))
-    if len(ctx.valutas) > 1:
-        _add_pic(doc, _chart_kurs_multi(data, ctx))
-    _add_pic(doc, _chart_rasio(data, ctx))
-
-    # ====================================================================
-    # GRAFIK §2 — JUMLAH TRANSAKSI
-    # ====================================================================
-    _label_grafik(doc, "Grafik §2 — Tren Jumlah Transaksi (Jual & Beli):")
-    if not tv.empty:
-        _add_pic(doc, _chart_volume(tv, g))
-
-    # ---- footer penyusun ----
-    doc.add_paragraph()
-    foot = doc.add_paragraph()
-    foot.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    fr = foot.add_run(f"Disusun oleh: {penyusun}" if penyusun else "")
-    fr.italic = True
-    fr.font.size = Pt(9)
+    # ====================== LEMBAR PENGESAHAN (4 kolom) ======================
+    _section_bar(doc, "LEMBAR PENGESAHAN")
+    _para(doc, f"{kota}, {_tgl_panjang(tgl_h)}", indent=0)
+    if pengesahan is None:
+        pengesahan = [("Dipersiapkan oleh", "Pelaksana", "", "Staf"),
+                      ("Diperiksa oleh", "Pengawas Senior", "", "Asisten Direktur"),
+                      ("Didukung oleh", "Pengawas Senior", "", "Asisten Direktur"),
+                      ("Disetujui oleh", "Pengawas Eksekutif", "", "Deputi Direktur")]
+    ts = doc.add_table(rows=2, cols=len(pengesahan))
+    ts.style = "Table Grid"
+    ts.alignment = WD_TABLE_ALIGNMENT.CENTER
+    for j, (hdr, peran, nama, jab) in enumerate(pengesahan):
+        hc = ts.rows[0].cells[j]
+        _set_cell_bg(hc, _BIRU_BAR)
+        _cell_run(hc, hdr, bold=True, size=10)
+        _cell_run(hc, peran, size=8, para=hc.add_paragraph())
+        bc = ts.rows[1].cells[j]
+        _cell_run(bc, "\n\n\n" + (nama or "(..............................)"),
+                  bold=True, size=10, color=RGBColor(0, 0, 0))
+        _cell_run(bc, jab, size=9, color=RGBColor(0, 0, 0), para=bc.add_paragraph())
 
     out = BytesIO()
     doc.save(out)

@@ -34,22 +34,46 @@ with tab_word:
 
     with st.container(border=True):
         section_title("Pengaturan laporan harian")
-        r1 = st.columns([1.3, 1.5, 1.2])
+        r1 = st.columns([1.4, 1.3, 1.3])
         tgl = r1[0].selectbox("📅 Tanggal laporan (harian)", options=hari_tersedia,
                               index=len(hari_tersedia) - 1, format_func=E.fmt_tgl, key="lap_tgl")
-        _def_val = [v for v in ["USD", "SGD"] if v in vals_all] or vals_all[:1]
-        valutas = r1[1].multiselect("💱 Valuta dipantau", options=vals_all,
-                                    default=_def_val, key="lap_valutas")
-        if not valutas:
-            valutas = _def_val
-        valuta_fokus = r1[2].selectbox("🎯 Valuta fokus", options=valutas, index=0, key="lap_fokus")
+        provinsi = r1[1].text_input("KPwDN Provinsi", value="DKI Jakarta", key="lap_prov")
+        kota = r1[2].text_input("Kota pengesahan", value="Jakarta", key="lap_kota")
 
-        r2 = st.columns([1.5, 1.5])
-        provinsi = r2[0].text_input("KPwDN Provinsi", value="DKI Jakarta", key="lap_prov")
-        penyusun = r2[1].text_input("Disusun oleh (opsional)", value="", key="lap_penyusun")
-        st.caption("Pembanding = hari transaksi sebelumnya (otomatis). Cakupan KUPVA = seluruh KUPVA BB. "
-                   "Tambah valuta di **Valuta dipantau** → laporan otomatis memuat grafik **tren kurs "
-                   "tengah multi-valuta** & **rasio per valuta**.")
+        st.caption("**Lembar pengesahan** (opsional) — peran = teks bebas; nama & jabatan = dropdown.")
+        NAMA_OPTS = ["—"] + [
+            "A'thinih Sufiyati", "Achnesia Frans", "Adhityas Ghaniyya Tejo", "Akmal",
+            "Alya Q.D. Susanto", "Anindya Aldora Nahar Mahsun", "Argi Muhammad Seto",
+            "Arif Waluyo Birowo", "Astri Apriliani", "Cici Amelia Azwen", "Dini Agustini",
+            "Dyas Wicaksono", "Fathya Annasya Yuzrin", "Fikri Mauli Utomo", "Hafidh Afif Ardhi",
+            "Hanan Qisthina Sindi", "Ivan Aprianto", "Leni Resti Purwanti",
+            "Mahesti Ayu Indira Harahap", "Maritza Aulia S Silitonga", "Muhammad Fathurrahman",
+            "Nur Anisa Junus", "Otto Iskandar Winata", "Saadiah Ludmilla", "Salma Athira Rahman",
+            "Sarwoto", "Tatag Budiarto A", "Vita Cahyaningtyas", "Yudhistira Tegar Setiawan",
+        ]
+        JABATAN_OPTS = ["Staf", "Asisten Manajer", "Manajer", "Asisten Direktur",
+                        "Deputi Direktur", "Direktur", "Kepala Perwakilan"]
+        _roles = [("Dipersiapkan oleh", "Pelaksana", "Staf"),
+                  ("Diperiksa oleh", "Pengawas Senior", "Asisten Direktur"),
+                  ("Didukung oleh", "Pengawas Senior", "Asisten Direktur"),
+                  ("Disetujui oleh", "Pengawas Eksekutif", "Deputi Direktur")]
+        cps = st.columns(4)
+        pengesahan = []
+        for i, (hdr, peran_def, jab_def) in enumerate(_roles):
+            with cps[i]:
+                st.markdown(f"**{hdr}**")
+                peran = st.text_input("Peran", value=peran_def, key=f"lap_peran_{i}")
+                nm = st.selectbox("Nama", NAMA_OPTS, key=f"lap_nm_{i}")
+                jb = st.selectbox("Jabatan", JABATAN_OPTS,
+                                  index=JABATAN_OPTS.index(jab_def), key=f"lap_jb_{i}")
+            pengesahan.append((hdr, peran, "" if nm == "—" else nm, jb))
+
+        # Laporan bersifat UMUM → seluruh valuta, tanpa valuta fokus/dipantau.
+        valutas = list(vals_all)
+        valuta_fokus = "USD" if "USD" in vals_all else (vals_all[0] if vals_all else "USD")
+        st.caption("Laporan bersifat **umum**: mencakup **seluruh valuta** yang ditransaksikan "
+                   "(tanpa valuta dipantau/fokus). Pembanding = hari transaksi sebelumnya (otomatis); "
+                   "cakupan = seluruh KUPVA BB. Field pengesahan opsional (untuk Lembar Pengesahan).")
 
     # ---- Konteks HARIAN (tanpa filter bar global) ----
     opsi_p = [d for d in hari_tersedia if pd.Timestamp(d) < pd.Timestamp(tgl)] or hari_tersedia
@@ -75,17 +99,19 @@ with tab_word:
         k[1].metric("Total volume H", E.rupiah(tot_vol))
         k[2].metric("Waspada kurs", int((mtx["Status Kurs"] == "Waspada").sum()))
         k[3].metric("Waspada volume", int((mtx["Status Volume"] == "Waspada").sum()))
-        st.markdown("Isi: **1. Analisis Kurs**, **2. Analisis Jumlah Transaksi**, "
-                    "**3. Objek Monitoring & Absensi**, **4. Supervisory Action**, lalu "
-                    "**Grafik §1** (tren kurs + tren multi-valuta + rasio per valuta) & "
-                    "**Grafik §2** (tren jumlah transaksi).")
+        st.markdown("Struktur (4 halaman): **Bagian 1** Objek Monitoring & Absensi (donat + Tabel "
+                    "1.1/1.2) · **Bagian 2** Kurs (Grafik 2.1/2.2 + Tabel 2.1) · **Bagian 3** Jumlah "
+                    "Transaksi (Grafik 3.1/3.2 + Tabel 3.1) · **Bagian 4** Supervisory Action (Tabel 4.1 "
+                    "+ tindakan) · **Lembar Pengesahan** (4 peran).")
 
     if st.button("🛠️ Susun laporan Word", type="primary", use_container_width=True, key="lap_build"):
         try:
-            from core.report import build_report
+            import importlib
+            import core.report as _rpt
+            importlib.reload(_rpt)  # pastikan memakai versi terbaru report.py
             with st.spinner("Menyusun laporan & grafik…"):
-                st.session_state["laporan_bytes"] = build_report(
-                    ctx_harian, provinsi=provinsi, penyusun=penyusun)
+                st.session_state["laporan_bytes"] = _rpt.build_report(
+                    ctx_harian, provinsi=provinsi, kota=kota, pengesahan=pengesahan)
                 st.session_state["laporan_nama"] = (
                     f"Laporan_Monitoring_Harian_KUPVA_{E.fmt_tgl(tgl)}.docx".replace(" ", "_")
                 )

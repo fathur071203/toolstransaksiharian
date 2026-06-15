@@ -1,129 +1,236 @@
-"""Halaman 2 — Monitoring Kurs (§1): rasio kurs KUPVA vs acuan BI."""
+"""Halaman Monitoring Kurs (§1) — Laporan Harian (konsep baru).
+
+Alur:
+  1. Pilih PERIODE (Harian/Mingguan/Bulanan/Triwulanan/Tahunan). Saat ini hanya
+     **Harian** yang aktif; lainnya placeholder (dalam pengembangan).
+  2. Filter Harian: Tanggal laporan → KUPVA terpilih → Valuta fokus (multi /
+     semua valuta).
+  3. Valuta yang tak ada transaksinya di KUPVA → diberi peringatan.
+  4. Bila ≥2 valuta → dropdown 'valuta grafik' mengatur grafik kurs & rasio
+     tengah; TABEL tetap menampilkan seluruh valuta.
+  5. Grafik kurs: BI (beli/tengah/jual) vs KUPVA (beli/tengah/jual), 3 hari
+     terakhir (H, H-1, H-2). Grafik rasio: rasio kurs tengah (KUPVA/BI) 3 hari.
+  6. Tabel lebar: per valuta Beli/Jual/Tengah (KUPVA vs BI) + rasio + status,
+     plus Status Akhir.
+"""
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 import saksi_engine as E
-from core.ui_helpers import require_auth
+from core.ui_helpers import require_auth, page_header, no_data_card, section_title
 
 require_auth()
-ctx = E.bootstrap("Monitoring Kurs (§1)", "💱",
-                  "Rasio kurs KUPVA terhadap acuan Bank Indonesia")
-data, cb = ctx.data, ctx.data["combine"]
-val = ctx.valuta_fokus
+page_header("💱", "Monitoring Kurs — Laporan Harian (§1)",
+            "Kurs KUPVA terpilih vs Bank Indonesia + rasio per valuta")
 
-g = ctx.granularitas
+data = E.get_data()
+if data is None:
+    no_data_card()
+    st.stop()
 
-# ---- tren kurs ----
-tk = E.tren_kurs(data, val, ctx.tgl_h, ctx.pts, gran=g)
-fig = go.Figure()
-warna = {"Kurs Jual": "#E24B4A", "Kurs Tengah": "#185FA5", "Kurs Beli": "#1D9E75"}
-for komp, c in warna.items():
-    s = tk[["Tanggal", komp]].replace(0, np.nan).dropna()
-    fig.add_trace(go.Scatter(x=s["Tanggal"], y=s[komp], name=komp, mode="lines+markers",
-                             line=dict(color=c, width=2)))
-acu = tk[["Tanggal", "Acuan BI"]].dropna()
-fig.add_trace(go.Scatter(x=acu["Tanggal"], y=acu["Acuan BI"], name="Acuan BI",
-                         mode="lines", line=dict(color="#888780", width=2, dash="dash")))
-fig.update_layout(height=340, margin=dict(t=30, b=8, l=8, r=8),
-                  title=dict(text=f"Tren kurs {val} (rata-rata KUPVA) vs acuan BI", font=dict(size=15)),
-                  legend=dict(orientation="h", y=-0.2), hovermode="x unified")
+cb = data["combine"]
+hari_all = E.daftar_tanggal(cb)
+vals_all = E.daftar_valuta(cb)
+pts_all = E.daftar_pt(cb)
+nama = lambda p: data["nama_map"].get(p, p)
 
-# ---- rasio per valuta terpilih (tengah) ----
-rows = []
-for v in ctx.valutas:
-    a = E.acuan_bi(data, v, ctx.tgl_h, gran=g)
-    kr = E.kurs_rata2(cb, ctx.tgl_h, v, ctx.pts, gran=g, acuan=a)["tengah"]
-    r = E.hitung_rasio(kr, a)
-    rows.append({"Valuta": v, "Rasio": r})
-rdf = pd.DataFrame(rows).dropna(subset=["Rasio"]) if rows else pd.DataFrame()
+# ----------------------------------------------------------------------------
+# 1. PERIODE
+# ----------------------------------------------------------------------------
+gp = st.columns([1.2, 5])
+gran = gp[0].selectbox("🗓️ Periode laporan", options=E.GRANULARITAS, index=0, key="kurs_gran")
+if gran != "Harian":
+    gp[1].markdown("&nbsp;")
+    st.info(f"Laporan **{gran}** sedang dalam pengembangan — saat ini baru **Harian** "
+            "yang aktif. Pilih **Harian** untuk melanjutkan.", icon="🚧")
+    st.stop()
 
-col1, col2 = st.columns([3, 2])
-col1.plotly_chart(fig, width='stretch')
+# ----------------------------------------------------------------------------
+# 2. FILTER LAPORAN KURS HARIAN
+# ----------------------------------------------------------------------------
+with st.container(border=True):
+    section_title("Filter laporan kurs harian")
 
-with col2:
-    mode = st.radio("Tampilan rasio", ["📈 Series", "📊 Bar"], horizontal=True,
-                    key="rasio_mode", label_visibility="collapsed")
-    if mode == "📈 Series":
-        # Rasio kurs tengah / acuan BI sepanjang rentang, satu garis per valuta.
-        rfig = go.Figure()
-        for v in ctx.valutas:
-            tkv = E.tren_kurs(data, v, ctx.tgl_h, ctx.pts, gran=g)
-            srs = tkv[["Tanggal", "Kurs Tengah", "Acuan BI"]].copy()
-            srs["Rasio"] = srs["Kurs Tengah"] / srs["Acuan BI"]
-            srs = srs.replace([np.inf, -np.inf], np.nan).dropna(subset=["Rasio"])
-            if not srs.empty:
-                rfig.add_trace(go.Scatter(x=srs["Tanggal"], y=srs["Rasio"], name=v,
-                                          mode="lines+markers"))
-        if rfig.data:
-            rfig.add_hline(y=ctx.ambang_rasio, line=dict(color=E.STATUS_WARNA["Waspada"], dash="dash"),
-                           annotation_text=f"Batas Waspada {ctx.ambang_rasio:.0%}",
-                           annotation_position="top left", annotation_font_size=10)
-            rfig.add_hline(y=1.0, line=dict(color=E.STATUS_WARNA["Perhatian"], dash="dot"))
-            rfig.update_layout(height=300, margin=dict(t=30, b=8, l=8, r=8),
-                               title=dict(text="Rasio kurs tengah vs BI (tren)", font=dict(size=15)),
-                               yaxis=dict(tickformat=".0%"), hovermode="x unified",
-                               legend=dict(orientation="h", y=-0.2))
-            st.plotly_chart(rfig, width='stretch')
-        else:
-            st.info("Belum ada rasio untuk ditampilkan sebagai series.")
-    elif not rdf.empty:
-        bar = go.Figure(go.Bar(
-            x=rdf["Rasio"], y=rdf["Valuta"], orientation="h",
-            marker_color=[E.STATUS_WARNA["Waspada"] if x >= ctx.ambang_rasio
-                          else (E.STATUS_WARNA["Perhatian"] if x > 1.0 else E.STATUS_WARNA["Normal"])
-                          for x in rdf["Rasio"]],
-            text=[E.persen(x) for x in rdf["Rasio"]], textposition="outside"))
-        bar.add_vline(x=ctx.ambang_rasio, line=dict(color=E.STATUS_WARNA["Waspada"], dash="dash"))
-        bar.add_vline(x=1.0, line=dict(color=E.STATUS_WARNA["Perhatian"], dash="dot"))
-        bar.update_layout(height=300, margin=dict(t=30, b=8, l=8, r=8),
-                          title=dict(text="Rasio kurs tengah vs BI", font=dict(size=15)),
-                          xaxis=dict(tickformat=".0%"))
-        st.plotly_chart(bar, width='stretch')
+    pov = st.radio("👁️ Sudut pandang",
+                   ["🚁 Keseluruhan (helicopter view)", "🏦 Per KUPVA (individu)"],
+                   horizontal=True, key="kurs_pov")
+    individu = pov.startswith("🏦")
+
+    r1 = st.columns([1.4, 2.4, 0.6])
+    tgl_h = r1[0].selectbox("📅 Tanggal laporan (H)", options=hari_all,
+                            index=len(hari_all) - 1, format_func=E.fmt_tgl, key="kurs_tgl")
+    if individu:
+        pid = r1[1].selectbox("🏦 KUPVA terpilih", options=pts_all, format_func=nama, key="kurs_pt")
+        subjek_pts, subjek_label, seri = [pid], nama(pid), "KUPVA"
     else:
-        st.info("Valuta terpilih tidak punya acuan BI untuk dirasiokan.")
+        r1[1].markdown(f'<div style="margin-top:26px;font-weight:600;color:#33475b;">'
+                       f'🚁 Agregat seluruh <b>{len(pts_all)}</b> KUPVA (rata-rata kurs)</div>',
+                       unsafe_allow_html=True)
+        subjek_pts, subjek_label, seri = list(pts_all), f"Seluruh KUPVA ({len(pts_all)})", "Rata-rata KUPVA"
+    with r1[2].popover("⚙️", use_container_width=True):
+        ambang = st.slider("Ambang Waspada rasio (≥)", 1.00, 1.20,
+                           E.AMBANG_RASIO_DEFAULT, 0.01, key="kurs_amb")
+        st.caption(f"< 100% Normal · 100%–{ambang:.0%} Perhatian · ≥ {ambang:.0%} Waspada.")
 
-# ---- tabel rasio komponen ----
-st.subheader(f"Rasio kurs {val} pada periode {ctx.lbl_h}")
-tr = E.tabel_rasio_kurs(data, val, ctx.tgl_h, ctx.tgl_p, ctx.tgl_awal, ctx.pts,
-                        ctx.ambang_rasio, gran=g)
-acuan = tr.attrs.get("acuan")
+    semua = st.checkbox("💱 Pilih semua valuta", key="kurs_semua_val")
+    _vdef = [v for v in ["USD"] if v in vals_all] or vals_all[:1]
+    fokus_sel = st.multiselect("🎯 Valuta fokus (boleh lebih dari satu)", options=vals_all,
+                               default=_vdef, key="kurs_fokus", disabled=semua)
+    fokus_list = list(vals_all) if semua else (fokus_sel or _vdef)
 
-view = pd.DataFrame({
-    "Komponen": tr["Komponen"],
-    "Awal": tr["Awal"], "Pembanding": tr["Pembanding"], "Tanggal cek": tr["Tanggal cek"],
-    "Rasio vs BI": tr["Rasio vs BI"], "Status": tr["Status"],
-    "Catatan": tr["Perhatian"].map({True: "> 100% (perhatian)", False: ""}),
-})
+# 3 hari transaksi terakhir s/d H
+hari = [t for t in hari_all if pd.Timestamp(t) <= pd.Timestamp(tgl_h)][-3:]
+lbl_x = [E.fmt_tgl(t) for t in hari]
+
+# Valuta yang benar-benar ditransaksikan subjek (KUPVA / seluruh KUPVA) pada H
+val_pt = E.valuta_pt_pada(data, subjek_pts, tgl_h, gran="Harian")
+tersedia = [v for v in fokus_list if v in val_pt]
+tidak_ada = [v for v in fokus_list if v not in val_pt]
+
+st.caption(f"Laporan **Harian** · {E.fmt_tgl(tgl_h)} · {subjek_label} · "
+           f"valuta fokus: {', '.join(fokus_list)} · rentang grafik {len(hari)} hari "
+           f"({lbl_x[0]} – {lbl_x[-1]})")
+
+if tidak_ada:
+    st.warning(f"🚫 **Tidak ada transaksi** pada {E.fmt_tgl(tgl_h)} ({subjek_label}) "
+               f"untuk valuta: **{', '.join(tidak_ada)}**. Valuta tersebut dikecualikan "
+               "dari grafik & tabel.", icon="⚠️")
+
+if not tersedia:
+    st.info(f"Tidak ada valuta fokus yang ditransaksikan pada tanggal ini ({subjek_label}). "
+            "Ubah tanggal / sudut pandang / valuta fokus.", icon="ℹ️")
+    st.stop()
+
+# ----------------------------------------------------------------------------
+# 3. Pemilih valuta grafik (muncul bila ≥ 2 valuta tersedia)
+# ----------------------------------------------------------------------------
+if len(tersedia) >= 2:
+    g_val = st.selectbox("📈 Valuta untuk grafik (kurs & rasio tengah)", options=tersedia,
+                         key="kurs_gval")
+else:
+    g_val = tersedia[0]
+
+# ----------------------------------------------------------------------------
+# GRAFIK 1 — Kurs BI vs KUPVA (beli/tengah/jual), 3 hari
+# ----------------------------------------------------------------------------
+rows = []
+for t in hari:
+    bi = E.kurs_bi_komponen(data, g_val, t)
+    pt = E.kurs_rata2(cb, t, g_val, subjek_pts, gran="Harian", acuan=bi["tengah"])
+    rows.append({
+        "Tanggal": E.fmt_tgl(t),
+        "BI Beli": bi["beli"], "BI Tengah": bi["tengah"], "BI Jual": bi["jual"],
+        "Subj Beli": pt["beli"], "Subj Tengah": pt["tengah"], "Subj Jual": pt["jual"],
+    })
+df1 = pd.DataFrame(rows)
+
+WARNA = {"Beli": "#1D9E75", "Tengah": "#185FA5", "Jual": "#E24B4A"}
+fig = go.Figure()
+for komp, c in WARNA.items():
+    fig.add_trace(go.Scatter(x=df1["Tanggal"], y=df1[f"BI {komp}"], name=f"BI {komp}",
+                             mode="lines+markers", legendgroup="BI",
+                             line=dict(color=c, width=2, dash="dash"),
+                             marker=dict(symbol="square", size=7)))
+    fig.add_trace(go.Scatter(x=df1["Tanggal"], y=df1[f"Subj {komp}"], name=f"{seri} {komp}",
+                             mode="lines+markers", legendgroup="subj",
+                             line=dict(color=c, width=2.6), marker=dict(symbol="circle", size=9)))
+fig.update_layout(height=380, margin=dict(t=36, b=8, l=8, r=8),
+                  title=dict(text=f"Kurs {g_val} — {subjek_label} vs Bank Indonesia (3 hari terakhir)",
+                             font=dict(size=15)),
+                  legend=dict(orientation="h", y=-0.18), hovermode="x unified",
+                  xaxis=dict(type="category"))
+
+# ----------------------------------------------------------------------------
+# GRAFIK 2 — Rasio kurs Beli/Tengah/Jual (KUPVA/BI) dalam 1 grafik, 3 hari
+# ----------------------------------------------------------------------------
+rrows = []
+for t in hari:
+    bi = E.kurs_bi_komponen(data, g_val, t)
+    pt = E.kurs_rata2(cb, t, g_val, subjek_pts, gran="Harian", acuan=bi["tengah"])
+    rrows.append({
+        "Tanggal": E.fmt_tgl(t),
+        "Rasio Beli": E.hitung_rasio(pt["beli"], bi["beli"]),
+        "Rasio Tengah": E.hitung_rasio(pt["tengah"], bi["tengah"]),
+        "Rasio Jual": E.hitung_rasio(pt["jual"], bi["jual"]),
+    })
+rdf = pd.DataFrame(rrows)
+ada_rasio = rdf[["Rasio Beli", "Rasio Tengah", "Rasio Jual"]].notna().any().any()
+
+rfig = go.Figure()
+if ada_rasio:
+    for komp, c in WARNA.items():
+        rfig.add_trace(go.Scatter(
+            x=rdf["Tanggal"], y=rdf[f"Rasio {komp}"], name=f"Rasio {komp}",
+            mode="lines+markers", line=dict(color=c, width=2.6), marker=dict(size=9)))
+    rfig.add_hline(y=ambang, line=dict(color=E.STATUS_WARNA["Waspada"], dash="dash"),
+                   annotation_text=f"Waspada {ambang:.0%}", annotation_position="top left",
+                   annotation_font_size=10)
+    rfig.add_hline(y=1.0, line=dict(color=E.STATUS_WARNA["Perhatian"], dash="dot"),
+                   annotation_text="100%", annotation_position="bottom left",
+                   annotation_font_size=10)
+    rfig.update_layout(height=380, margin=dict(t=36, b=8, l=8, r=8),
+                       title=dict(text=f"Rasio kurs (beli/tengah/jual) {g_val} — {subjek_label} vs BI",
+                                  font=dict(size=15)),
+                       yaxis=dict(tickformat=".1%"), hovermode="x unified",
+                       legend=dict(orientation="h", y=-0.18), xaxis=dict(type="category"))
+
+c1, c2 = st.columns([3, 2])
+c1.plotly_chart(fig, width="stretch")
+with c2:
+    if not ada_rasio:
+        st.info(f"Rasio {g_val} tak tersedia (acuan BI / kurs tidak memadai).")
+    else:
+        st.plotly_chart(rfig, width="stretch")
+
+# ----------------------------------------------------------------------------
+# TABEL LEBAR — seluruh valuta tersedia
+# ----------------------------------------------------------------------------
+st.subheader(f"Rincian kurs {subjek_label} pada {E.fmt_tgl(tgl_h)} (Beli · Jual · Tengah)")
+tbl = E.tabel_kurs_komponen(data, subjek_pts, tgl_h, tersedia, ambang, gran="Harian")
+
 
 def warna_status(v):
     c = E.STATUS_WARNA.get(v)
-    return f"background-color: {c}22; color: {c}; font-weight: 500;" if c else ""
+    return f"background-color: {c}22; color: {c}; font-weight: 600;" if c else ""
 
-sty = (view.style.map(warna_status, subset=["Status"])
-       .format({"Awal": E.angka, "Pembanding": E.angka, "Tanggal cek": E.angka,
-                "Rasio vs BI": E.persen}))
-st.dataframe(sty, width='stretch', hide_index=True)
-st.caption(f"Acuan BI {val} pada {ctx.lbl_h}: "
-           f"{E.angka(acuan) if acuan else '—'} "
-           f"({'Kurs Jisdor' if val=='USD' else 'Kurs Tengah BI'}, forward-fill ke ujung periode).")
 
-# ---- narasi otomatis ----
+def tandai_kosong(v):
+    """Sel tanpa data (NaN) → abu & miring, agar jelas 'tidak ada data', bukan 0."""
+    return ("background-color: #8887801a; color: #888780; font-style: italic;"
+            if pd.isna(v) else "")
+
+
+fmt_map = {}
+for label in ("Beli", "Jual", "Tengah"):
+    fmt_map[f"{label} KUPVA"] = E.angka
+    fmt_map[f"{label} BI"] = E.angka
+    fmt_map[f"Rasio {label}"] = E.persen
+status_cols = ["Status Beli", "Status Jual", "Status Tengah", "Status Akhir"]
+sty = (tbl.style
+       .map(warna_status, subset=status_cols)
+       .map(tandai_kosong, subset=list(fmt_map.keys()))
+       .format(fmt_map, na_rep="tidak ada data"))
+st.dataframe(sty, width="stretch", hide_index=True)
+st.caption("Rasio = Kurs KUPVA ÷ Kurs BI · sel **tidak ada data** ditandai abu (bukan 0) · "
+           f"Status per komponen 3-tingkat · Status Akhir = paling berat · ambang Waspada ≥ {ambang:.0%}.")
+
+# ----------------------------------------------------------------------------
+# NARASI OTOMATIS (§1)
+# ----------------------------------------------------------------------------
 st.subheader("Narasi asesmen otomatis (§1)")
-n_wasp = int((tr["Status"] == "Waspada").sum())
-komp_txt = "; ".join(
-    f"{r.Komponen.lower()} {E.persen(r['Rasio vs BI'])} ({r.Status})"
-    for _, r in tr.iterrows() if pd.notna(r["Rasio vs BI"])
-)
-if n_wasp == 0:
-    kes = (f"Tidak terdapat komponen kurs {val} berkategori Waspada (≥ {ctx.ambang_rasio:.0%}); "
-           "seluruh objek monitoring tergolong Normal. Rasio di atas 100% tetap menjadi perhatian "
-           "pengawasan namun belum melampaui ambang Waspada.")
+n_w = int((tbl["Status Akhir"] == "Waspada").sum())
+n_p = int((tbl["Status Akhir"] == "Perhatian").sum())
+val_w = ", ".join(tbl.loc[tbl["Status Akhir"] == "Waspada", "Valuta"])
+val_p = ", ".join(tbl.loc[tbl["Status Akhir"] == "Perhatian", "Valuta"])
+if n_w == 0 and n_p == 0:
+    kes = "Seluruh valuta tergolong Normal (rasio < 100%)."
+elif n_w == 0:
+    kes = f"{n_p} valuta berkategori Perhatian (100%–{ambang:.0%}): {val_p}. Belum Waspada namun dipantau."
 else:
-    kes = (f"Terdapat {n_wasp} komponen kurs {val} berkategori Waspada (≥ {ctx.ambang_rasio:.0%}); "
-           "pendalaman penyebab perlu dilakukan terhadap KUPVA BB terkait.")
-st.info(
-    f"Pada periode {ctx.lbl_h} ({ctx.granularitas}), rasio kurs {val} terhadap acuan "
-    f"Bank Indonesia: {komp_txt}. {kes}",
-    icon="📝")
+    kes = (f"{n_w} valuta berkategori Waspada (≥ {ambang:.0%}): {val_w}"
+           + (f"; {n_p} valuta Perhatian: {val_p}" if n_p else "")
+           + ". Perlu pendalaman penyebab terhadap KUPVA terkait.")
+st.info(f"Pada {E.fmt_tgl(tgl_h)} (Harian), asesmen kurs {subjek_label} atas "
+        f"{len(tersedia)} valuta ({', '.join(tersedia)}): {kes}", icon="📝")

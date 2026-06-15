@@ -1,28 +1,56 @@
-"""Halaman 6 — Risiko Valuta: eksposur valuta eksotik tanpa acuan BI."""
-import numpy as np
+"""Halaman Risiko Valuta — Laporan Harian: eksposur valuta eksotik tanpa acuan BI.
+
+Filter mandiri (periode Harian + tanggal). Menampilkan valuta yang diperdagangkan
+seluruh KUPVA pada tanggal cek namun tidak memiliki acuan BI (rawan mispricing /
+titik perhatian APU-PPT), terutama valuta zona konflik/sanksi.
+"""
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 import saksi_engine as E
-from core.ui_helpers import require_auth
+from core.ui_helpers import require_auth, page_header, no_data_card, section_title
 
 require_auth()
-ctx = E.bootstrap("Risiko Valuta", "⚠️",
-                  "Eksposur valuta eksotik tanpa acuan BI")
-data, cb = ctx.data, ctx.data["combine"]
-g = ctx.granularitas
+page_header("⚠️", "Risiko Valuta — Laporan Harian",
+            "Eksposur valuta eksotik tanpa acuan BI")
+
+data = E.get_data()
+if data is None:
+    no_data_card()
+    st.stop()
+
+cb = data["combine"]
+hari_all = E.daftar_tanggal(cb)
+
+# ----------------------------------------------------------------------------
+# 1. PERIODE
+# ----------------------------------------------------------------------------
+gp = st.columns([1.2, 5])
+gran = gp[0].selectbox("🗓️ Periode laporan", options=E.GRANULARITAS, index=0, key="rv_gran")
+if gran != "Harian":
+    st.info(f"Risiko **{gran}** sedang dalam pengembangan — saat ini baru **Harian** "
+            "yang aktif. Pilih **Harian** untuk melanjutkan.", icon="🚧")
+    st.stop()
+
+# ----------------------------------------------------------------------------
+# 2. FILTER
+# ----------------------------------------------------------------------------
+with st.container(border=True):
+    section_title("Filter risiko harian")
+    r1 = st.columns([1.4, 3.0])
+    tgl_h = r1[0].selectbox("📅 Tanggal laporan (H)", options=hari_all,
+                            index=len(hari_all) - 1, format_func=E.fmt_tgl, key="rv_tgl")
 
 st.caption(
     "Valuta yang diperdagangkan namun tidak memiliki acuan kurs BI (Kurs Tengah/Jisdor) "
     "sulit di-benchmark, sehingga rawan mispricing dan menjadi titik perhatian APU-PPT — "
-    "terutama valuta zona konflik/sanksi."
-)
+    "terutama valuta zona konflik/sanksi.")
 
-vt = E.valuta_tanpa_acuan(data, ctx.tgl_h, ctx.pts, gran=g)
+vt = E.valuta_tanpa_acuan(data, tgl_h, pts=None, gran="Harian")
 
 if vt.empty:
-    st.success("Seluruh valuta yang diperdagangkan pada tanggal cek memiliki acuan BI.")
+    st.success(f"Seluruh valuta yang diperdagangkan pada {E.fmt_tgl(tgl_h)} memiliki acuan BI.")
     st.stop()
 
 n_sensitif = int(vt["Sensitif"].sum())
@@ -30,7 +58,7 @@ tot_eksotik = float(vt["Volume H (Rp)"].sum())
 k = st.columns(3)
 k[0].metric("Valuta tanpa acuan", len(vt))
 k[1].metric("Di antaranya sensitif", n_sensitif, help="Valuta zona konflik/sanksi")
-k[2].metric("Total volume eksotik H", E.rupiah(tot_eksotik))
+k[2].metric(f"Total volume eksotik · {E.fmt_tgl(tgl_h)}", E.rupiah(tot_eksotik))
 
 st.divider()
 c1, c2 = st.columns([3, 2])
@@ -45,7 +73,7 @@ with c1:
         text=[E.rupiah(x) for x in top["Volume H (Rp)"]], textposition="outside"))
     fig.update_layout(height=380, margin=dict(t=10, b=8, l=8, r=8),
                       yaxis=dict(autorange="reversed"))
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, width="stretch")
     st.caption("Merah = valuta sensitif geopolitik · oranye = lainnya.")
 
 with c2:
@@ -59,14 +87,14 @@ with c2:
     sty = (view[["Valuta", "Negara/Konteks", "Sensitif", "Volume H (Rp)", "Jml KUPVA"]]
            .style.map(warna, subset=["Sensitif"])
            .format({"Volume H (Rp)": lambda x: E.rupiah(x)}))
-    st.dataframe(sty, width='stretch', hide_index=True, height=380)
+    st.dataframe(sty, width="stretch", hide_index=True, height=380)
 
-# ---- konsentrasi PT x valuta sensitif ----
+# ---- konsentrasi KUPVA × valuta sensitif ----
 st.subheader("Konsentrasi KUPVA BB pada valuta sensitif")
 sens = vt[vt["Sensitif"]]["Valuta"].tolist()
-sub = E.filter_cb(cb, tgl=ctx.tgl_h, valutas=sens, pts=ctx.pts, gran=g)
+sub = E.filter_cb(cb, tgl=tgl_h, valutas=sens, pts=None, gran="Harian") if sens else cb.iloc[0:0]
 if sub.empty:
-    st.info("Tidak ada transaksi valuta sensitif pada periode cek.")
+    st.info("Tidak ada transaksi valuta sensitif pada tanggal cek.")
 else:
     sub = sub.copy()
     sub["Volume"] = sub[E.C_JUAL_RP] + sub[E.C_BELI_RP]
@@ -74,14 +102,13 @@ else:
                           aggfunc="sum", fill_value=0)
     piv.index = [data["nama_map"].get(i, i) for i in piv.index]
     piv = piv.loc[piv.sum(axis=1).sort_values(ascending=False).index]
-    fig2 = go.Figure(go.Heatmap(
-        z=piv.values, x=list(piv.columns), y=list(piv.index),
-        colorscale="Reds", colorbar=dict(title="Rp")))
+    fig2 = go.Figure(go.Heatmap(z=piv.values, x=list(piv.columns), y=list(piv.index),
+                                colorscale="Reds", colorbar=dict(title="Rp")))
     fig2.update_layout(height=max(260, 38 * len(piv)), margin=dict(t=10, b=8, l=8, r=8))
-    st.plotly_chart(fig2, width='stretch')
+    st.plotly_chart(fig2, width="stretch")
 
 st.info(
-    f"Pada periode {ctx.lbl_h} ({g}) terdapat {len(vt)} valuta tanpa acuan BI "
+    f"Pada {E.fmt_tgl(tgl_h)} (Harian) terdapat {len(vt)} valuta tanpa acuan BI "
     f"({n_sensitif} di antaranya valuta sensitif geopolitik) dengan total volume "
     f"{E.rupiah(tot_eksotik)}. Transaksi valuta tanpa acuan direkomendasikan untuk pendalaman "
     "(verifikasi kurs, underlying, dan profil nasabah) sebagai bagian pengawasan APU-PPT.",

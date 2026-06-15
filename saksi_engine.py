@@ -207,7 +207,7 @@ def punya_acuan(data: dict, valuta: str) -> bool:
 # ----------------------------------------------------------------------------
 # Periode (granularitas pemantauan): Harian / Mingguan / Bulanan / Tahunan
 # ----------------------------------------------------------------------------
-GRANULARITAS = ["Harian", "Mingguan", "Bulanan", "Tahunan"]
+GRANULARITAS = ["Harian", "Mingguan", "Bulanan", "Triwulanan", "Tahunan"]
 _BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
 
 
@@ -220,6 +220,10 @@ def periode_range(tgl, gran: str = "Harian"):
     elif gran == "Bulanan":
         lo = t.replace(day=1)
         hi = lo + pd.offsets.MonthEnd(0)
+    elif gran == "Triwulanan":               # Jan-Mar / Apr-Jun / Jul-Sep / Okt-Des
+        q0 = (t.month - 1) // 3
+        lo = t.replace(month=q0 * 3 + 1, day=1)
+        hi = lo + pd.offsets.MonthEnd(3)
     elif gran == "Tahunan":
         lo = t.replace(month=1, day=1)
         hi = t.replace(month=12, day=31)
@@ -241,6 +245,8 @@ def fmt_periode(tgl, gran: str = "Harian") -> str:
         return f"Minggu {int(t.isocalendar().week)} · {fmt_tgl(lo)}–{fmt_tgl(hi)}"
     if gran == "Bulanan":
         return f"{_BULAN[t.month - 1]} {t.year}"
+    if gran == "Triwulanan":
+        return f"Triwulan {(t.month - 1) // 3 + 1} {t.year}"
     if gran == "Tahunan":
         return f"Tahun {t.year}"
     return fmt_tgl(t)
@@ -282,6 +288,17 @@ def volume_jual_beli(cb, tgl, valutas=None, pts=None, gran: str = "Harian") -> t
     return float(sub[C_JUAL_RP].sum()), float(sub[C_BELI_RP].sum())
 
 
+def volume_jual_beli_lapor(cb, tgl, valutas=None, pts=None, gran: str = "Harian") -> tuple:
+    """Seperti volume_jual_beli, tetapi mengembalikan (NaN, NaN) bila TIDAK ADA
+    baris transaksi sama sekali (KUPVA tidak melaporkan / tidak bertransaksi valuta
+    itu pada periode tsb). Tujuannya: membedakan 'tidak ada data' dari 'melaporkan
+    nol' agar tidak menjadi 0 yang membuat growth menyesatkan (mis. -100%)."""
+    sub = filter_cb(cb, tgl=tgl, valutas=valutas, pts=pts, gran=gran)
+    if sub.empty:
+        return np.nan, np.nan
+    return float(sub[C_JUAL_RP].sum()), float(sub[C_BELI_RP].sum())
+
+
 def growth(h: float, pembanding: float) -> float:
     """Pertumbuhan day-to-day sebagai rasio. NaN bila basis pembanding = 0."""
     if pembanding is None or pembanding == 0:
@@ -301,6 +318,28 @@ def kurs_rata2(cb, tgl, valuta, pts=None, gran: str = "Harian", acuan=None) -> d
     }
 
 
+def kurs_bi_komponen(data: dict, valuta: str, tgl) -> dict:
+    """Kurs BI (Beli/Tengah/Jual) untuk satu valuta pada tgl, forward-fill ke hari
+    kerja terakhir <= tgl. Diambil dari sheet 'Kurs Tengah' (Kurs Transaksi BI),
+    berlaku untuk semua valuta termasuk USD. Bila USD tak ada di sheet → fallback
+    Jisdor (beli == tengah == jual). Nilai hilang → NaN."""
+    def _f(x):
+        v = pd.to_numeric(x, errors="coerce")
+        return float(v) if pd.notna(v) else np.nan
+
+    t = pd.Timestamp(tgl).normalize()
+    ref = data["tengah"]
+    sub = ref[(ref["Kode"] == valuta) & (ref["Tgl"] <= t)]
+    if not sub.empty:
+        r = sub.iloc[-1]
+        return {"beli": _f(r["Beli BI"]), "tengah": _f(r["Kurs Tengah"]), "jual": _f(r["Jual BI"])}
+    if valuta == "USD":
+        a = acuan_bi(data, "USD", t, "Harian")
+        if a is not None:
+            return {"beli": a, "tengah": a, "jual": a}
+    return {"beli": np.nan, "tengah": np.nan, "jual": np.nan}
+
+
 def status_kurs(rasio, ambang=AMBANG_RASIO_DEFAULT) -> str:
     """Status 2-tingkat sesuai Summary: Normal (<ambang) / Waspada (>=ambang).
     Rasio >100% bersifat 'perhatian pengawasan' (lihat perhatian_kurs), bukan label tersendiri."""
@@ -314,6 +353,21 @@ def status_kurs(rasio, ambang=AMBANG_RASIO_DEFAULT) -> str:
 def perhatian_kurs(rasio) -> bool:
     """True bila rasio > 100% (di atas acuan BI) namun belum mencapai ambang Waspada."""
     return rasio is not None and rasio == rasio and 1.0 < rasio < AMBANG_RASIO_DEFAULT
+
+
+def status_kurs3(rasio, ambang=AMBANG_RASIO_DEFAULT) -> str:
+    """Status 3-tingkat (dipakai Laporan Harian Kurs):
+        Waspada   : rasio >= ambang (default 105%)
+        Perhatian : 100% <= rasio < ambang
+        Normal    : rasio < 100%
+    Tanpa data bila NaN/0."""
+    if rasio is None or (isinstance(rasio, float) and np.isnan(rasio)) or rasio == 0:
+        return "Tanpa data"
+    if rasio >= ambang:
+        return "Waspada"
+    if rasio >= 1.0:
+        return "Perhatian"
+    return "Normal"
 
 
 def hitung_rasio(kurs, acuan, lo=0.5, hi=2.0):
@@ -366,6 +420,80 @@ def tabel_rasio_kurs(data, valuta, tgl_h, tgl_p, tgl_awal, pts, ambang, gran="Ha
     df = pd.DataFrame(rows)
     df.attrs["acuan"] = acu
     return df
+
+
+_STATUS_ORDER = {"Waspada": 3, "Perhatian": 2, "Normal": 1, "Tanpa data": 0}
+
+
+def status_akhir(statuses) -> str:
+    """Status komposit = paling berat di antara komponen (Waspada>Perhatian>Normal)."""
+    valid = [s for s in statuses if s in _STATUS_ORDER]
+    return max(valid, key=_STATUS_ORDER.get) if valid else "Tanpa data"
+
+
+def _as_pts(pid) -> list:
+    """Normalkan pid → daftar id KUPVA (terima skalar maupun list/tuple).
+    Memungkinkan fungsi dipakai untuk individu (1 KUPVA) maupun agregat (banyak)."""
+    return list(pid) if isinstance(pid, (list, tuple, set, pd.Index)) else [pid]
+
+
+def valuta_pt_pada(data, pid, tgl, gran="Harian") -> list:
+    """Daftar valuta yang ditransaksikan KUPVA (satu atau kumpulan) pada periode tgl."""
+    sub = filter_cb(data["combine"], tgl=tgl, pts=_as_pts(pid), gran=gran)
+    return sorted(sub[C_VAL].dropna().unique().tolist())
+
+
+def tabel_kurs_komponen(data, pid, tgl, valutas, ambang=AMBANG_RASIO_DEFAULT, gran="Harian") -> pd.DataFrame:
+    """Tabel lebar Laporan Harian Kurs: per valuta → Beli/Jual/Tengah (KUPVA vs BI)
+    + rasio (KUPVA/BI) & status tiap komponen + Status Akhir (komposit terburuk).
+    Urutan komponen: Beli, Jual, Tengah (sesuai konsep laporan).
+    `pid` boleh satu KUPVA (individu) atau daftar KUPVA (agregat/helicopter)."""
+    cb = data["combine"]
+    pts = _as_pts(pid)
+    tgl_bi = periode_akhir(tgl, gran) if gran != "Harian" else tgl
+    rows = []
+    for v in valutas:
+        bi = kurs_bi_komponen(data, v, tgl_bi)
+        pt = kurs_rata2(cb, tgl, v, pts, gran=gran, acuan=bi["tengah"])
+        rec = {"Valuta": v}
+        st3 = []
+        for label, key in (("Beli", "beli"), ("Jual", "jual"), ("Tengah", "tengah")):
+            kk, ab = pt[key], bi[key]
+            r = hitung_rasio(kk, ab)
+            s = status_kurs3(r, ambang)
+            st3.append(s)
+            rec[f"{label} KUPVA"] = kk
+            rec[f"{label} BI"] = ab
+            rec[f"Rasio {label}"] = r
+            rec[f"Status {label}"] = s
+        rec["Status Akhir"] = status_akhir(st3)
+        rows.append(rec)
+    return pd.DataFrame(rows)
+
+
+def tabel_volume_komponen(data, pid, tgl, tgl_p, valutas, ambang=AMBANG_DTD_DEFAULT, gran="Harian") -> pd.DataFrame:
+    """Tabel lebar Laporan Volume: per valuta → Jual & Beli (H vs pembanding) +
+    growth dtd & status tiap sisi + Total (H) + Status Akhir (komposit terburuk).
+    `pid` boleh satu KUPVA (individu) atau daftar KUPVA (agregat/helicopter)."""
+    cb = data["combine"]
+    pts = _as_pts(pid)
+    rows = []
+    for v in valutas:
+        jh, bh = volume_jual_beli_lapor(cb, tgl, [v], pts, gran)
+        if tgl_p is not None:
+            jp, bp = volume_jual_beli_lapor(cb, tgl_p, [v], pts, gran)
+        else:
+            jp = bp = np.nan
+        gj, gb = growth(jh, jp), growth(bh, bp)
+        sj, sb = status_volume(gj, ambang), status_volume(gb, ambang)
+        rows.append({
+            "Valuta": v,
+            "Jual (H)": jh, "Jual (Pemb.)": jp, "Growth Jual": gj, "Status Jual": sj,
+            "Beli (H)": bh, "Beli (Pemb.)": bp, "Growth Beli": gb, "Status Beli": sb,
+            "Total (H)": np.nansum([jh, bh]) if not (np.isnan(jh) and np.isnan(bh)) else np.nan,
+            "Status Akhir": status_akhir([sj, sb]),
+        })
+    return pd.DataFrame(rows)
 
 
 def tren_kurs(data, valuta, tgl_h, pts, gran="Harian") -> pd.DataFrame:
@@ -443,6 +571,39 @@ def matriks_per_kupva(data, valuta_fokus, valutas, tgl_h, tgl_p, pts, ambang_r, 
     return pd.DataFrame(rows)
 
 
+def ringkasan_kupva(data, tgl_h, tgl_p, ambang_r=AMBANG_RASIO_DEFAULT,
+                    ambang_v=AMBANG_DTD_DEFAULT, gran="Harian") -> pd.DataFrame:
+    """Matriks terintegrasi per KUPVA pada H — MENYATUKAN §1/§2/§3:
+      • Absensi      : Lengkap / Sebagian / Belum lapor (berdasar hari lapor).
+      • Status Kurs  : terburuk antar valuta (rasio vs BI, 3-tingkat).
+      • Status Volume: terburuk antar valuta (growth dtd vs pembanding).
+      • Status Akhir : terburuk gabungan kurs+volume.
+    KUPVA yang belum lapor → kurs/volume 'Tanpa data'."""
+    cb = data["combine"]
+    n_hari = len(_hari_transaksi_periode(cb, tgl_h, gran))
+    rows = []
+    for pid in daftar_pt(cb):
+        sub_h = filter_cb(cb, tgl=tgl_h, pts=[pid], gran=gran)
+        hl = int(sub_h["Tgl"].dt.normalize().nunique()) if not sub_h.empty else 0
+        absensi = _status_lapor(hl, n_hari)
+        vals = valuta_pt_pada(data, pid, tgl_h, gran)
+        if vals:
+            tk = tabel_kurs_komponen(data, pid, tgl_h, vals, ambang_r, gran)
+            s_kurs = status_akhir(tk["Status Akhir"].tolist())
+            tv = tabel_volume_komponen(data, pid, tgl_h, tgl_p, vals, ambang_v, gran)
+            s_vol = status_akhir(tv["Status Akhir"].tolist())
+        else:
+            s_kurs = s_vol = "Tanpa data"
+        rows.append({
+            "ID": pid, "KUPVA BB": data["nama_map"].get(pid, pid),
+            "Absensi": absensi, "Jml valuta": len(vals),
+            "Status Kurs": s_kurs, "Status Volume": s_vol,
+            "Volume (Rp)": float(sub_h[C_JUAL_RP].sum() + sub_h[C_BELI_RP].sum()),
+            "Status Akhir": status_akhir([s_kurs, s_vol]),
+        })
+    return pd.DataFrame(rows)
+
+
 def tabel_absensi(data, tgl_h, pts, gran="Harian") -> pd.DataFrame:
     """§3 - absensi & kelengkapan. Proxy ketepatan = ketersediaan baris transaksi di periode."""
     cb = data["combine"]
@@ -457,6 +618,57 @@ def tabel_absensi(data, tgl_h, pts, gran="Harian") -> pd.DataFrame:
             "ID": pid, "KUPVA BB": nama, "Dipilih": dalam_pilihan,
             "Lapor H": ada, "Jml baris": int(len(sub)), "Volume H (Rp)": vol,
             "Status": "Lengkap" if ada else "Belum lapor",
+        })
+    return pd.DataFrame(rows)
+
+
+def _hari_transaksi_periode(cb, tgl, gran="Harian") -> list:
+    """Tanggal transaksi (yang ADA pada data) yang jatuh dalam periode tgl."""
+    lo, hi = periode_range(tgl, gran)
+    return [t for t in daftar_tanggal(cb) if lo <= pd.Timestamp(t) <= hi]
+
+
+def _status_lapor(hari_lapor: int, n_hari: int) -> str:
+    """Lengkap (lapor semua hari) / Sebagian (lapor sebagian) / Belum lapor."""
+    if n_hari and hari_lapor >= n_hari:
+        return "Lengkap"
+    return "Sebagian" if hari_lapor > 0 else "Belum lapor"
+
+
+def absensi_periode(data, tgl, gran="Harian") -> pd.DataFrame:
+    """Absensi SELURUH KUPVA pada satu periode: jumlah hari transaksi yang
+    dilaporkan vs total hari transaksi dalam periode + kelengkapan, volume, status.
+    Harian → total hari = 1 (status Lengkap/Belum lapor saja)."""
+    cb = data["combine"]
+    n_hari = len(_hari_transaksi_periode(cb, tgl, gran))
+    rows = []
+    for pid in daftar_pt(cb):
+        sub = filter_cb(cb, tgl=tgl, pts=[pid], gran=gran)
+        hl = int(sub["Tgl"].dt.normalize().nunique()) if not sub.empty else 0
+        rows.append({
+            "ID": pid, "KUPVA BB": data["nama_map"].get(pid, pid),
+            "Hari lapor": hl, "Hari transaksi": n_hari,
+            "Kelengkapan": (hl / n_hari) if n_hari else 0.0,
+            "Volume (Rp)": float(sub[C_JUAL_RP].sum() + sub[C_BELI_RP].sum()),
+            "Status": _status_lapor(hl, n_hari),
+        })
+    return pd.DataFrame(rows)
+
+
+def absensi_penyelenggara(data, pid, gran="Harian") -> pd.DataFrame:
+    """Absensi SATU KUPVA sepanjang seluruh periode pada data (terurut waktu)."""
+    cb = data["combine"]
+    rows = []
+    for t in daftar_periode(cb, gran):
+        n_hari = len(_hari_transaksi_periode(cb, t, gran))
+        sub = filter_cb(cb, tgl=t, pts=[pid], gran=gran)
+        hl = int(sub["Tgl"].dt.normalize().nunique()) if not sub.empty else 0
+        rows.append({
+            "Periode": fmt_periode(t, gran), "_tgl": pd.Timestamp(t),
+            "Hari lapor": hl, "Hari transaksi": n_hari,
+            "Kelengkapan": (hl / n_hari) if n_hari else 0.0,
+            "Volume (Rp)": float(sub[C_JUAL_RP].sum() + sub[C_BELI_RP].sum()),
+            "Status": _status_lapor(hl, n_hari),
         })
     return pd.DataFrame(rows)
 
