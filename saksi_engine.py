@@ -151,11 +151,11 @@ def daftar_tanggal(cb: pd.DataFrame) -> list:
 
 
 def daftar_pt(cb: pd.DataFrame) -> list:
-    return sorted(cb[C_ID].dropna().unique().tolist())
+    return sorted(cb[C_ID].dropna().unique().tolist(), key=str)
 
 
 def daftar_valuta(cb: pd.DataFrame) -> list:
-    return sorted(cb[C_VAL].dropna().unique().tolist())
+    return sorted(cb[C_VAL].dropna().unique().tolist(), key=str)
 
 
 def acuan_bi(data: dict, valuta: str, tgl: pd.Timestamp, gran: str = "Harian") -> Optional[float]:
