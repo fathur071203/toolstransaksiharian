@@ -19,7 +19,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import saksi_engine as E
-from core.ui_helpers import require_auth, page_header, no_data_card, section_title
+from core.ui_helpers import (require_auth, page_header, no_data_card, section_title,
+                             filter_harian_mode)
 
 require_auth()
 page_header("💱", "Monitoring Kurs — Laporan Harian (§1)",
@@ -58,18 +59,18 @@ with st.container(border=True):
                    horizontal=True, key="kurs_pov")
     individu = pov.startswith("🏦")
 
-    r1 = st.columns([1.4, 2.4, 0.6])
-    tgl_h = r1[0].selectbox("📅 Tanggal laporan (H)", options=hari_all,
-                            index=len(hari_all) - 1, format_func=E.fmt_tgl, key="kurs_tgl")
+    tgl_h, hari, is_series = filter_harian_mode(hari_all, "kurs")
+
+    r1 = st.columns([3.4, 0.6])
     if individu:
-        pid = r1[1].selectbox("🏦 KUPVA terpilih", options=pts_all, format_func=nama, key="kurs_pt")
+        pid = r1[0].selectbox("🏦 KUPVA terpilih", options=pts_all, format_func=nama, key="kurs_pt")
         subjek_pts, subjek_label, seri = [pid], nama(pid), "KUPVA"
     else:
-        r1[1].markdown(f'<div style="margin-top:26px;font-weight:600;color:#33475b;">'
+        r1[0].markdown(f'<div style="margin-top:26px;font-weight:600;color:#33475b;">'
                        f'🚁 Agregat seluruh <b>{len(pts_all)}</b> KUPVA (rata-rata kurs)</div>',
                        unsafe_allow_html=True)
         subjek_pts, subjek_label, seri = list(pts_all), f"Seluruh KUPVA ({len(pts_all)})", "Rata-rata KUPVA"
-    with r1[2].popover("⚙️", use_container_width=True):
+    with r1[1].popover("⚙️", use_container_width=True):
         ambang = st.slider("Ambang Waspada rasio (≥)", 1.00, 1.20,
                            E.AMBANG_RASIO_DEFAULT, 0.01, key="kurs_amb")
         st.caption(f"< 100% Normal · 100%–{ambang:.0%} Perhatian · ≥ {ambang:.0%} Waspada.")
@@ -80,18 +81,18 @@ with st.container(border=True):
                                default=_vdef, key="kurs_fokus", disabled=semua)
     fokus_list = list(vals_all) if semua else (fokus_sel or _vdef)
 
-# 3 hari transaksi terakhir s/d H
-hari = [t for t in hari_all if pd.Timestamp(t) <= pd.Timestamp(tgl_h)][-3:]
+# Deret tanggal untuk grafik (3 hari terakhir / sepanjang rentang series)
 lbl_x = [E.fmt_tgl(t) for t in hari]
+rentang_lbl = (f"series {lbl_x[0]} – {lbl_x[-1]} ({len(hari)} hari)"
+               if is_series else f"{len(hari)} hari terakhir")
 
 # Valuta yang benar-benar ditransaksikan subjek (KUPVA / seluruh KUPVA) pada H
 val_pt = E.valuta_pt_pada(data, subjek_pts, tgl_h, gran="Harian")
 tersedia = [v for v in fokus_list if v in val_pt]
 tidak_ada = [v for v in fokus_list if v not in val_pt]
 
-st.caption(f"Laporan **Harian** · {E.fmt_tgl(tgl_h)} · {subjek_label} · "
-           f"valuta fokus: {', '.join(fokus_list)} · rentang grafik {len(hari)} hari "
-           f"({lbl_x[0]} – {lbl_x[-1]})")
+st.caption(f"Laporan **Harian** · {'tanggal akhir ' if is_series else ''}{E.fmt_tgl(tgl_h)} · "
+           f"{subjek_label} · valuta fokus: {', '.join(fokus_list)} · grafik {rentang_lbl}")
 
 if tidak_ada:
     st.warning(f"🚫 **Tidak ada transaksi** pada {E.fmt_tgl(tgl_h)} ({subjek_label}) "
@@ -137,7 +138,7 @@ for komp, c in WARNA.items():
                              mode="lines+markers", legendgroup="subj",
                              line=dict(color=c, width=2.6), marker=dict(symbol="circle", size=9)))
 fig.update_layout(height=380, margin=dict(t=36, b=8, l=8, r=8),
-                  title=dict(text=f"Kurs {g_val} — {subjek_label} vs Bank Indonesia (3 hari terakhir)",
+                  title=dict(text=f"Kurs {g_val} — {subjek_label} vs Bank Indonesia ({rentang_lbl})",
                              font=dict(size=15)),
                   legend=dict(orientation="h", y=-0.18), hovermode="x unified",
                   xaxis=dict(type="category"))
@@ -186,9 +187,26 @@ with c2:
 
 # ----------------------------------------------------------------------------
 # TABEL LEBAR — seluruh valuta tersedia
+#   Satu hari  → satu tabel (tanggal H).
+#   Series     → tabel ditumpuk PER TANGGAL (kolom Tanggal di depan).
 # ----------------------------------------------------------------------------
-st.subheader(f"Rincian kurs {subjek_label} pada {E.fmt_tgl(tgl_h)} (Beli · Jual · Tengah)")
-tbl = E.tabel_kurs_komponen(data, subjek_pts, tgl_h, tersedia, ambang, gran="Harian")
+tbl = E.tabel_kurs_komponen(data, subjek_pts, tgl_h, tersedia, ambang, gran="Harian")  # H → narasi
+
+if is_series:
+    st.subheader(f"Rincian kurs {subjek_label} per tanggal "
+                 f"({lbl_x[0]} – {lbl_x[-1]}) (Beli · Jual · Tengah)")
+    parts = []
+    for t in hari:
+        val_t = [v for v in fokus_list if v in E.valuta_pt_pada(data, subjek_pts, t, gran="Harian")]
+        if not val_t:
+            continue
+        tt = E.tabel_kurs_komponen(data, subjek_pts, t, val_t, ambang, gran="Harian")
+        tt.insert(0, "Tanggal", E.fmt_tgl(t))
+        parts.append(tt)
+    tbl_show = pd.concat(parts, ignore_index=True) if parts else tbl.copy()
+else:
+    st.subheader(f"Rincian kurs {subjek_label} pada {E.fmt_tgl(tgl_h)} (Beli · Jual · Tengah)")
+    tbl_show = tbl
 
 
 def warna_status(v):
@@ -208,13 +226,15 @@ for label in ("Beli", "Jual", "Tengah"):
     fmt_map[f"{label} BI"] = E.angka
     fmt_map[f"Rasio {label}"] = E.persen
 status_cols = ["Status Beli", "Status Jual", "Status Tengah", "Status Akhir"]
-sty = (tbl.style
+sty = (tbl_show.style
        .map(warna_status, subset=status_cols)
        .map(tandai_kosong, subset=list(fmt_map.keys()))
        .format(fmt_map, na_rep="tidak ada data"))
-st.dataframe(sty, width="stretch", hide_index=True)
+st.dataframe(sty, width="stretch", hide_index=True,
+             height=(430 if is_series else "content"))
 st.caption("Rasio = Kurs KUPVA ÷ Kurs BI · sel **tidak ada data** ditandai abu (bukan 0) · "
-           f"Status per komponen 3-tingkat · Status Akhir = paling berat · ambang Waspada ≥ {ambang:.0%}.")
+           f"Status per komponen 3-tingkat · Status Akhir = paling berat · ambang Waspada ≥ {ambang:.0%}."
+           + (" · baris dikelompokkan per **Tanggal** sepanjang rentang series." if is_series else ""))
 
 # ----------------------------------------------------------------------------
 # NARASI OTOMATIS (§1)

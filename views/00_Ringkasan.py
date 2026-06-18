@@ -9,7 +9,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import saksi_engine as E
-from core.ui_helpers import require_auth, page_header, no_data_card, section_title
+from core.ui_helpers import (require_auth, page_header, no_data_card, section_title,
+                             filter_harian_mode)
 
 require_auth()
 page_header("🛡️", "Ringkasan Pengawasan",
@@ -50,10 +51,8 @@ if gran != "Harian":
 # ----------------------------------------------------------------------------
 with st.container(border=True):
     section_title("Filter ringkasan harian")
-    r1 = st.columns([1.6, 0.7])
-    tgl_h = r1[0].selectbox("📅 Tanggal laporan (H)", options=hari_all,
-                            index=len(hari_all) - 1, format_func=E.fmt_tgl, key="rk_tgl")
-    with r1[1].popover("⚙️ Ambang", use_container_width=True):
+    tgl_h, hari, is_series = filter_harian_mode(hari_all, "rk")
+    with st.popover("⚙️ Ambang"):
         ambang_r = st.slider("Waspada rasio kurs (≥)", 1.00, 1.20,
                              E.AMBANG_RASIO_DEFAULT, 0.01, key="rk_amb_r")
         ambang_v = st.slider("Waspada growth volume (≥)", 0.05, 0.50,
@@ -72,8 +71,43 @@ n_vw = int((mtx["Status Volume"] == "Waspada").sum())
 n_aw = int((mtx["Status Akhir"] == "Waspada").sum())
 tot_vol = float(mtx["Volume (Rp)"].sum())
 
-st.caption(f"Laporan **Harian** · {E.fmt_tgl(tgl_h)} · pembanding volume "
-           f"{E.fmt_tgl(tgl_p) if tgl_p is not None else '—'} · seluruh {total} KUPVA pada data")
+st.caption(f"Laporan **Harian** · {'tanggal akhir ' if is_series else ''}{E.fmt_tgl(tgl_h)} · "
+           f"pembanding volume {E.fmt_tgl(tgl_p) if tgl_p is not None else '—'} · "
+           f"seluruh {total} KUPVA pada data")
+
+# ----------------------------------------------------------------------------
+# TREN HARIAN (hanya mode series) — deret volume & jumlah KUPVA bertransaksi
+# ----------------------------------------------------------------------------
+if is_series:
+    section_title(f"Tren harian · {E.fmt_tgl(hari[0])} – {E.fmt_tgl(hari[-1])} ({len(hari)} hari)")
+    trows = []
+    for t in hari:
+        s = E.filter_cb(cb, tgl=t, gran="Harian")
+        trows.append({"Tanggal": E.fmt_tgl(t),
+                      "Volume Jual": float(s[E.C_JUAL_RP].sum()),
+                      "Volume Beli": float(s[E.C_BELI_RP].sum()),
+                      "KUPVA lapor": int(s[E.C_ID].nunique())})
+    tdf = pd.DataFrame(trows)
+    tc1, tc2 = st.columns(2)
+    fvol = go.Figure()
+    fvol.add_trace(go.Bar(x=tdf["Tanggal"], y=tdf["Volume Jual"], name="Volume Jual",
+                          marker_color="#185FA5"))
+    fvol.add_trace(go.Bar(x=tdf["Tanggal"], y=tdf["Volume Beli"], name="Volume Beli",
+                          marker_color="#1D9E75"))
+    fvol.update_layout(height=320, barmode="group", margin=dict(t=36, b=8, l=8, r=8),
+                       title=dict(text="Volume harian (Rp) — seluruh KUPVA", font=dict(size=14)),
+                       legend=dict(orientation="h", y=-0.2), hovermode="x unified",
+                       xaxis=dict(type="category"))
+    tc1.plotly_chart(fvol, width="stretch")
+    flap = go.Figure(go.Scatter(x=tdf["Tanggal"], y=tdf["KUPVA lapor"], mode="lines+markers",
+                                line=dict(color="#C8A951", width=2.6), marker=dict(size=8)))
+    flap.update_layout(height=320, margin=dict(t=36, b=8, l=8, r=8),
+                       title=dict(text="Jumlah KUPVA bertransaksi per hari", font=dict(size=14)),
+                       hovermode="x unified", xaxis=dict(type="category"))
+    tc2.plotly_chart(flap, width="stretch")
+    st.caption("KPI, komposisi status, dan matriks di bawah menggambarkan **tanggal akhir** "
+               f"rentang ({E.fmt_tgl(tgl_h)}).")
+    st.divider()
 
 # ----------------------------------------------------------------------------
 # KPI
@@ -140,20 +174,41 @@ d3.plotly_chart(donut("Status Volume (§2)", [
 
 # ----------------------------------------------------------------------------
 # MATRIKS TERINTEGRASI per KUPVA
+#   Satu hari → matriks tanggal H. Series → ditumpuk PER TANGGAL.
 # ----------------------------------------------------------------------------
-st.subheader("Matriks terintegrasi per KUPVA BB — Absensi × Kurs × Volume")
-view = pd.DataFrame({
-    "KUPVA BB": mtx["KUPVA BB"],
-    "Absensi": mtx["Absensi"],
-    "Jml valuta": mtx["Jml valuta"],
-    "Status Kurs": mtx["Status Kurs"],
-    "Status Volume": mtx["Status Volume"],
-    "Volume (Rp)": mtx["Volume (Rp)"],
-    "Status Akhir": mtx["Status Akhir"],
-})
+def _matriks_view(m):
+    return pd.DataFrame({
+        "KUPVA BB": m["KUPVA BB"],
+        "Absensi": m["Absensi"],
+        "Jml valuta": m["Jml valuta"],
+        "Status Kurs": m["Status Kurs"],
+        "Status Volume": m["Status Volume"],
+        "Volume (Rp)": m["Volume (Rp)"],
+        "Status Akhir": m["Status Akhir"],
+    })
+
+
+if is_series:
+    st.subheader(f"Matriks terintegrasi per KUPVA BB — per tanggal "
+                 f"({E.fmt_tgl(hari[0])} – {E.fmt_tgl(hari[-1])})")
+    parts = []
+    for t in hari:
+        it = hari_all.index(t)
+        t_p = hari_all[it - 1] if it > 0 else None
+        mt = E.ringkasan_kupva(data, t, t_p, ambang_r, ambang_v, gran="Harian")
+        vt = _matriks_view(mt)
+        vt.insert(0, "Tanggal", E.fmt_tgl(t))
+        parts.append(vt)
+    view = pd.concat(parts, ignore_index=True) if parts else _matriks_view(mtx)
+    tinggi = 560
+else:
+    st.subheader("Matriks terintegrasi per KUPVA BB — Absensi × Kurs × Volume")
+    view = _matriks_view(mtx)
+    tinggi = 440
+
 sty = (view.style.map(warna, subset=["Absensi", "Status Kurs", "Status Volume", "Status Akhir"])
        .format({"Volume (Rp)": lambda x: E.rupiah(x)}))
-st.dataframe(sty, width="stretch", hide_index=True, height=440,
+st.dataframe(sty, width="stretch", hide_index=True, height=tinggi,
              column_config={"KUPVA BB": st.column_config.TextColumn(width="large")})
 st.caption("Status Kurs/Volume = kondisi TERBURUK antar valuta yang ditransaksikan KUPVA pada H. "
            "Status Akhir = gabungan terburuk Kurs & Volume. KUPVA belum lapor → kurs/volume 'Tanpa data'.")

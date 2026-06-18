@@ -13,6 +13,7 @@ Palet brand (Bank Indonesia):
 """
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 # ----------------------------------------------------------------------------
@@ -355,6 +356,57 @@ def page_header(icon: str, title: str, subtitle: str = "") -> None:
 
 def section_title(text: str) -> None:
     st.markdown(f'<div class="section-title">{text}</div>', unsafe_allow_html=True)
+
+
+# ----------------------------------------------------------------------------
+# Filter tampilan Harian: "Satu hari" vs "Series (rentang tanggal)"
+# ----------------------------------------------------------------------------
+def filter_harian_mode(hari_all, key_prefix: str, *, n_default_series: int = 10,
+                       label_tanggal: str = "📅 Tanggal laporan (H)"):
+    """Kontrol pilih tampilan laporan Harian: satu hari atau series rentang tanggal.
+
+    Dipakai bersama oleh halaman §1 Kurs, §2 Volume, §4 Profil, dan Ringkasan agar
+    pengguna bisa melihat **satu hari saja** (perilaku lama) atau **deret panjang**
+    dengan rentang tanggal `dari`–`sampai` yang bisa diatur sendiri.
+
+    Args:
+        hari_all: daftar tanggal transaksi terurut (hasil `E.daftar_tanggal`).
+        key_prefix: awalan unik untuk key widget per halaman (mis. "kurs", "vol").
+        n_default_series: panjang rentang default (jumlah hari transaksi terakhir)
+            saat pertama kali masuk mode series.
+        label_tanggal: label selectbox tanggal pada mode satu hari.
+
+    Returns:
+        tuple `(tgl_h, hari, is_series)`:
+          - `tgl_h`     : Timestamp tanggal acuan (H); pada mode series = ujung `sampai`.
+          - `hari`      : list tanggal transaksi untuk deret grafik.
+                          * Satu hari → 3 hari transaksi terakhir s/d H (perilaku lama).
+                          * Series    → seluruh hari transaksi dalam [dari, sampai].
+          - `is_series` : bool, True bila mode series aktif.
+    """
+    import saksi_engine as E
+
+    mode = st.radio("👁️ Tampilan", ["📅 Satu hari", "📈 Series (rentang tanggal)"],
+                    horizontal=True, key=f"{key_prefix}_mode")
+    is_series = mode.startswith("📈")
+
+    if not is_series:
+        tgl_h = st.selectbox(label_tanggal, options=hari_all, index=len(hari_all) - 1,
+                             format_func=E.fmt_tgl, key=f"{key_prefix}_tgl")
+        hari = [t for t in hari_all if pd.Timestamp(t) <= pd.Timestamp(tgl_h)][-3:]
+        return tgl_h, hari, False
+
+    cc = st.columns(2)
+    i_awal_def = max(0, len(hari_all) - n_default_series)
+    tgl_a = cc[0].selectbox("📅 Dari tanggal", options=hari_all, index=i_awal_def,
+                            format_func=E.fmt_tgl, key=f"{key_prefix}_tgl_awal")
+    opsi_sampai = [t for t in hari_all if pd.Timestamp(t) >= pd.Timestamp(tgl_a)]
+    tgl_h = cc[1].selectbox("📅 Sampai tanggal", options=opsi_sampai,
+                            index=len(opsi_sampai) - 1, format_func=E.fmt_tgl,
+                            key=f"{key_prefix}_tgl_sampai")
+    hari = [t for t in hari_all
+            if pd.Timestamp(tgl_a) <= pd.Timestamp(t) <= pd.Timestamp(tgl_h)]
+    return tgl_h, hari, True
 
 
 def no_data_card() -> None:

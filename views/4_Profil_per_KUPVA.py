@@ -9,7 +9,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import saksi_engine as E
-from core.ui_helpers import require_auth, page_header, no_data_card, section_title
+from core.ui_helpers import (require_auth, page_header, no_data_card, section_title,
+                             filter_harian_mode)
 
 require_auth()
 page_header("🏦", "Profil per-KUPVA — Laporan Harian",
@@ -40,12 +41,11 @@ if gran != "Harian":
 # ----------------------------------------------------------------------------
 with st.container(border=True):
     section_title("Filter profil harian")
-    r1 = st.columns([1.4, 2.4, 0.6])
-    tgl_h = r1[0].selectbox("📅 Tanggal laporan (H)", options=hari_all,
-                            index=len(hari_all) - 1, format_func=E.fmt_tgl, key="pf_tgl")
-    pid = r1[1].selectbox("🏦 KUPVA terpilih", options=pts_all,
+    tgl_h, hari, is_series = filter_harian_mode(hari_all, "pf")
+    r1 = st.columns([3.4, 0.6])
+    pid = r1[0].selectbox("🏦 KUPVA terpilih", options=pts_all,
                           format_func=lambda p: f"{nama(p)} ({p})", key="pf_pt")
-    with r1[2].popover("⚙️", use_container_width=True):
+    with r1[1].popover("⚙️", use_container_width=True):
         ambang_r = st.slider("Waspada rasio kurs (≥)", 1.00, 1.20,
                              E.AMBANG_RASIO_DEFAULT, 0.01, key="pf_amb_r")
         ambang_v = st.slider("Waspada growth volume (≥)", 0.05, 0.50,
@@ -55,8 +55,10 @@ i_h = hari_all.index(tgl_h)
 tgl_p = hari_all[i_h - 1] if i_h > 0 else None
 sub_h = E.filter_cb(cb, tgl=tgl_h, pts=[pid], gran="Harian")
 
-st.caption(f"Laporan **Harian** · {E.fmt_tgl(tgl_h)} · KUPVA **{nama(pid)}** · "
-           f"pembanding volume {E.fmt_tgl(tgl_p) if tgl_p is not None else '—'}")
+st.caption(f"Laporan **Harian** · {'tanggal akhir ' if is_series else ''}{E.fmt_tgl(tgl_h)} · "
+           f"KUPVA **{nama(pid)}** · pembanding volume "
+           f"{E.fmt_tgl(tgl_p) if tgl_p is not None else '—'}"
+           + (f" · tren kurs sepanjang {len(hari)} hari" if is_series else ""))
 
 if sub_h.empty:
     st.warning(f"🚫 {nama(pid)} **tidak menyampaikan transaksi** pada {E.fmt_tgl(tgl_h)} "
@@ -81,20 +83,42 @@ st.divider()
 
 # ----------------------------------------------------------------------------
 # RINCIAN PER VALUTA (kurs vs BI + volume dtd)
+#   Satu hari → rincian tanggal H. Series → ditumpuk PER TANGGAL.
 # ----------------------------------------------------------------------------
-st.subheader(f"Rincian per valuta · {E.fmt_tgl(tgl_h)}")
-tk = E.tabel_kurs_komponen(data, pid, tgl_h, vals, ambang_r, gran="Harian")
-tv = E.tabel_volume_komponen(data, pid, tgl_h, tgl_p, vals, ambang_v, gran="Harian")
-rdf = pd.DataFrame({
-    "Valuta": tk["Valuta"],
-    "Rasio Tengah": tk["Rasio Tengah"],
-    "Status Kurs": tk["Status Akhir"],
-    "Vol Jual (H)": tv["Jual (H)"],
-    "Vol Beli (H)": tv["Beli (H)"],
-    "Growth Jual": tv["Growth Jual"],
-    "Growth Beli": tv["Growth Beli"],
-    "Status Volume": tv["Status Akhir"],
-})
+def _rincian(t, t_p, valutas):
+    """Rakit tabel rincian per-valuta untuk satu tanggal `t` (pembanding `t_p`)."""
+    tk = E.tabel_kurs_komponen(data, pid, t, valutas, ambang_r, gran="Harian")
+    tv = E.tabel_volume_komponen(data, pid, t, t_p, valutas, ambang_v, gran="Harian")
+    return pd.DataFrame({
+        "Valuta": tk["Valuta"],
+        "Rasio Tengah": tk["Rasio Tengah"],
+        "Status Kurs": tk["Status Akhir"],
+        "Vol Jual (H)": tv["Jual (H)"],
+        "Vol Beli (H)": tv["Beli (H)"],
+        "Growth Jual": tv["Growth Jual"],
+        "Growth Beli": tv["Growth Beli"],
+        "Status Volume": tv["Status Akhir"],
+    })
+
+
+rdf = _rincian(tgl_h, tgl_p, vals)  # tanggal akhir → dipakai narasi
+
+if is_series:
+    st.subheader(f"Rincian per valuta · per tanggal ({E.fmt_tgl(hari[0])} – {E.fmt_tgl(hari[-1])})")
+    parts = []
+    for t in hari:
+        vals_t = E.valuta_pt_pada(data, pid, t, gran="Harian")
+        if not vals_t:
+            continue
+        it = hari_all.index(t)
+        t_p = hari_all[it - 1] if it > 0 else None
+        part = _rincian(t, t_p, vals_t)
+        part.insert(0, "Tanggal", E.fmt_tgl(t))
+        parts.append(part)
+    rdf_show = pd.concat(parts, ignore_index=True) if parts else rdf.copy()
+else:
+    st.subheader(f"Rincian per valuta · {E.fmt_tgl(tgl_h)}")
+    rdf_show = rdf
 
 
 def warna_status(v):
@@ -108,22 +132,27 @@ def tandai_kosong(v):
 
 
 num_cols = ["Rasio Tengah", "Vol Jual (H)", "Vol Beli (H)", "Growth Jual", "Growth Beli"]
-sty = (rdf.style
+sty = (rdf_show.style
        .map(warna_status, subset=["Status Kurs", "Status Volume"])
        .map(tandai_kosong, subset=num_cols)
        .format({"Rasio Tengah": E.persen, "Vol Jual (H)": E.rupiah, "Vol Beli (H)": E.rupiah,
                 "Growth Jual": E.persen, "Growth Beli": E.persen}, na_rep="tidak ada data"))
-st.dataframe(sty, width="stretch", hide_index=True)
+st.dataframe(sty, width="stretch", hide_index=True,
+             height=(430 if is_series else "content"))
+if is_series:
+    st.caption("Baris dikelompokkan per **Tanggal** sepanjang rentang series; "
+               "pembanding growth tiap baris = hari transaksi sebelumnya.")
 
 # ----------------------------------------------------------------------------
 # TREN KURS 3 HARI untuk valuta terpilih KUPVA ini
 # ----------------------------------------------------------------------------
 volmap = {v: float(sub_h[sub_h[E.C_VAL] == v][E.C_JUAL_RP].sum()
                    + sub_h[sub_h[E.C_VAL] == v][E.C_BELI_RP].sum()) for v in vals}
-g_val = st.selectbox("📈 Valuta untuk tren kurs (3 hari)", options=vals,
+g_val = st.selectbox("📈 Valuta untuk tren kurs", options=vals,
                      index=vals.index(max(volmap, key=volmap.get)), key="pf_gval")
 
-hari = [t for t in hari_all if pd.Timestamp(t) <= pd.Timestamp(tgl_h)][-3:]
+tren_lbl = (f"series {E.fmt_tgl(hari[0])} – {E.fmt_tgl(hari[-1])} ({len(hari)} hari)"
+            if is_series else f"{len(hari)} hari")
 rows = []
 for t in hari:
     bi = E.kurs_bi_komponen(data, g_val, t)
@@ -143,7 +172,7 @@ for komp, c in WARNA.items():
                              mode="lines+markers", legendgroup="KUPVA",
                              line=dict(color=c, width=2.6), marker=dict(size=9)))
 fig.update_layout(height=340, margin=dict(t=36, b=8, l=8, r=8),
-                  title=dict(text=f"Tren kurs {g_val} — {nama(pid)} vs BI (3 hari)", font=dict(size=15)),
+                  title=dict(text=f"Tren kurs {g_val} — {nama(pid)} vs BI ({tren_lbl})", font=dict(size=15)),
                   legend=dict(orientation="h", y=-0.2), hovermode="x unified",
                   xaxis=dict(type="category"))
 st.plotly_chart(fig, width="stretch")

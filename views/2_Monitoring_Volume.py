@@ -18,7 +18,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import saksi_engine as E
-from core.ui_helpers import require_auth, page_header, no_data_card, section_title
+from core.ui_helpers import (require_auth, page_header, no_data_card, section_title,
+                             filter_harian_mode)
 
 require_auth()
 page_header("📊", "Monitoring Volume — Laporan Harian (§2)",
@@ -56,18 +57,18 @@ with st.container(border=True):
                    horizontal=True, key="vol_pov")
     individu = pov.startswith("🏦")
 
-    r1 = st.columns([1.4, 2.4, 0.6])
-    tgl_h = r1[0].selectbox("📅 Tanggal laporan (H)", options=hari_all,
-                            index=len(hari_all) - 1, format_func=E.fmt_tgl, key="vol_tgl")
+    tgl_h, hari, is_series = filter_harian_mode(hari_all, "vol")
+
+    r1 = st.columns([3.4, 0.6])
     if individu:
-        pid = r1[1].selectbox("🏦 KUPVA terpilih", options=pts_all, format_func=nama, key="vol_pt")
+        pid = r1[0].selectbox("🏦 KUPVA terpilih", options=pts_all, format_func=nama, key="vol_pt")
         subjek_pts, subjek_label = [pid], nama(pid)
     else:
-        r1[1].markdown(f'<div style="margin-top:26px;font-weight:600;color:#33475b;">'
+        r1[0].markdown(f'<div style="margin-top:26px;font-weight:600;color:#33475b;">'
                        f'🚁 Agregat seluruh <b>{len(pts_all)}</b> KUPVA (volume dijumlahkan)</div>',
                        unsafe_allow_html=True)
         subjek_pts, subjek_label = list(pts_all), f"Seluruh KUPVA ({len(pts_all)})"
-    with r1[2].popover("⚙️", use_container_width=True):
+    with r1[1].popover("⚙️", use_container_width=True):
         ambang = st.slider("Ambang Waspada growth (≥)", 0.05, 0.50,
                            E.AMBANG_DTD_DEFAULT, 0.01, format="%.2f", key="vol_amb")
         st.caption(f"Waspada bila |growth dtd| ≥ {ambang:.0%}.")
@@ -78,9 +79,10 @@ with st.container(border=True):
                                default=_vdef, key="vol_fokus", disabled=semua)
     fokus_list = list(vals_all) if semua else (fokus_sel or _vdef)
 
-# 3 hari transaksi terakhir s/d H + pembanding (hari transaksi sebelum H)
-hari = [t for t in hari_all if pd.Timestamp(t) <= pd.Timestamp(tgl_h)][-3:]
+# Deret tanggal untuk grafik (3 hari terakhir / sepanjang rentang series) + pembanding H-1
 lbl_x = [E.fmt_tgl(t) for t in hari]
+rentang_lbl = (f"series {lbl_x[0]} – {lbl_x[-1]} ({len(hari)} hari)"
+               if is_series else f"{len(hari)} hari terakhir")
 i_h = hari_all.index(tgl_h)
 tgl_p = hari_all[i_h - 1] if i_h > 0 else None
 
@@ -89,9 +91,9 @@ val_pt = E.valuta_pt_pada(data, subjek_pts, tgl_h, gran="Harian")
 tersedia = [v for v in fokus_list if v in val_pt]
 tidak_ada = [v for v in fokus_list if v not in val_pt]
 
-st.caption(f"Laporan **Harian** · {E.fmt_tgl(tgl_h)} · {subjek_label} · "
-           f"pembanding {E.fmt_tgl(tgl_p) if tgl_p is not None else '—'} · "
-           f"valuta fokus: {', '.join(fokus_list)}")
+st.caption(f"Laporan **Harian** · {'tanggal akhir ' if is_series else ''}{E.fmt_tgl(tgl_h)} · "
+           f"{subjek_label} · pembanding {E.fmt_tgl(tgl_p) if tgl_p is not None else '—'} · "
+           f"valuta fokus: {', '.join(fokus_list)} · grafik {rentang_lbl}")
 
 if tidak_ada:
     st.warning(f"🚫 **Tidak ada transaksi** pada {E.fmt_tgl(tgl_h)} ({subjek_label}) "
@@ -128,7 +130,7 @@ fig = go.Figure()
 fig.add_trace(go.Bar(x=vdf["Tanggal"], y=vdf["Jual"], name="Volume Jual", marker_color="#185FA5"))
 fig.add_trace(go.Bar(x=vdf["Tanggal"], y=vdf["Beli"], name="Volume Beli", marker_color="#1D9E75"))
 fig.update_layout(height=380, barmode="group", margin=dict(t=36, b=8, l=8, r=8),
-                  title=dict(text=f"Volume {g_val} (Rp) — {subjek_label} (3 hari terakhir)",
+                  title=dict(text=f"Volume {g_val} (Rp) — {subjek_label} ({rentang_lbl})",
                              font=dict(size=15)),
                   legend=dict(orientation="h", y=-0.18), hovermode="x unified",
                   xaxis=dict(type="category"))
@@ -178,9 +180,28 @@ with c2:
 
 # ----------------------------------------------------------------------------
 # TABEL LEBAR — seluruh valuta tersedia
+#   Satu hari  → satu tabel (tanggal H, pembanding H-1).
+#   Series     → tabel ditumpuk PER TANGGAL (pembanding = hari transaksi sebelumnya).
 # ----------------------------------------------------------------------------
-st.subheader(f"Rincian volume {subjek_label} pada {E.fmt_tgl(tgl_h)} (Jual · Beli, growth dtd)")
-tbl = E.tabel_volume_komponen(data, subjek_pts, tgl_h, tgl_p, tersedia, ambang, gran="Harian")
+tbl = E.tabel_volume_komponen(data, subjek_pts, tgl_h, tgl_p, tersedia, ambang, gran="Harian")  # H → narasi
+
+if is_series:
+    st.subheader(f"Rincian volume {subjek_label} per tanggal "
+                 f"({lbl_x[0]} – {lbl_x[-1]}) (Jual · Beli, growth dtd)")
+    parts = []
+    for t in hari:
+        val_t = [v for v in fokus_list if v in E.valuta_pt_pada(data, subjek_pts, t, gran="Harian")]
+        if not val_t:
+            continue
+        it = hari_all.index(t)
+        t_p = hari_all[it - 1] if it > 0 else None
+        tt = E.tabel_volume_komponen(data, subjek_pts, t, t_p, val_t, ambang, gran="Harian")
+        tt.insert(0, "Tanggal", E.fmt_tgl(t))
+        parts.append(tt)
+    tbl_show = pd.concat(parts, ignore_index=True) if parts else tbl.copy()
+else:
+    st.subheader(f"Rincian volume {subjek_label} pada {E.fmt_tgl(tgl_h)} (Jual · Beli, growth dtd)")
+    tbl_show = tbl
 
 
 def warna_status(v):
@@ -200,14 +221,17 @@ fmt_map = {
     "Total (H)": E.rupiah,
 }
 status_cols = ["Status Jual", "Status Beli", "Status Akhir"]
-sty = (tbl.style
+sty = (tbl_show.style
        .map(warna_status, subset=status_cols)
        .map(tandai_kosong, subset=list(fmt_map.keys()))
        .format(fmt_map, na_rep="tidak ada data"))
-st.dataframe(sty, width="stretch", hide_index=True)
+st.dataframe(sty, width="stretch", hide_index=True,
+             height=(430 if is_series else "content"))
 st.caption("Growth dtd = (H − pembanding) ÷ pembanding · sel **tidak ada data** "
            "(KUPVA tak melapor/bertransaksi) ditandai abu & tidak dihitung sebagai 0 · "
-           f"Status Waspada bila |growth| ≥ {ambang:.0%} · Status Akhir = paling berat antar sisi.")
+           f"Status Waspada bila |growth| ≥ {ambang:.0%} · Status Akhir = paling berat antar sisi."
+           + (" · baris dikelompokkan per **Tanggal**; pembanding tiap baris = hari transaksi "
+              "sebelumnya." if is_series else ""))
 
 # ----------------------------------------------------------------------------
 # NARASI OTOMATIS (§2)
